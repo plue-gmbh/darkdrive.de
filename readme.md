@@ -49,17 +49,17 @@ Always run Darkdrive behind HTTPS — your password travels to the server at log
 
 ## Installation
 
-**1.** Upload all files to your web server with PHP 8.1+ and open the URL
+To try it locally first, run a dev server from the project root: `php -S localhost:8000 -d post_max_size=2G -d upload_max_filesize=2G`
 
-**2.** Set a password on first visit. **Write it down.** It is the only way to decrypt your files — there is no recovery. **Do this immediately:** a fresh instance is claimed by whoever opens it first, so never leave an unconfigured install publicly reachable before you have set your password. If someone else claims it first, delete the installation and redo it under a different domain
+To deploy:
 
-**3.** Move the data directory outside the web root by defining `DARKDRIVE_STORAGE_DIR` in `index.php`:
+**1.** Before uploading, move the data directory outside the web root by defining `DARKDRIVE_STORAGE_DIR` in `index.php`:
 
 ```php
 define('DARKDRIVE_STORAGE_DIR', '/home/my_data');
 ```
 
-With the directory outside the web root, no URL can ever reach your encrypted files or the password hash — on any web server. Without it, data lives in `data/` inside the web root:
+With the directory outside the web root, no URL can ever reach your encrypted files or the password hash — on any web server. Setting this first means the app writes straight to its final location and never creates a `data/` inside the web root. Without it, data lives in `data/` inside the web root:
 
 - **Apache** — still protected: Darkdrive writes a `Deny from all` `.htaccess` into `data/` automatically
 - **nginx** — **not protected**: nginx ignores `.htaccess`, so you must either set `DARKDRIVE_STORAGE_DIR` (recommended) or block the directory in your server config — `data/` contains the password hash, and leaving it reachable enables offline brute-force attacks:
@@ -68,9 +68,11 @@ With the directory outside the web root, no URL can ever reach your encrypted fi
   location ^~ /data/ { deny all; }
   ```
 
-You can customize further instance configuration in `index.php`
+**2.** Upload all files to your web server with PHP 8.1+ and open the URL
 
-You can also run a local server via `php -S localhost:8000 -d post_max_size=2G -d upload_max_filesize=2G`
+**3.** Set a password on first visit. **Write it down.** It is the only way to decrypt your files — there is no recovery. **Do this immediately:** a fresh instance is claimed by whoever opens it first, so never leave an unconfigured install publicly reachable before you have set your password. If someone else claims it first, delete the installation and redo it under a different domain
+
+You can customize further instance configuration in `index.php`
 
 ---
 
@@ -89,7 +91,7 @@ Thumbnails are generated and stored locally for all files, including S3 files. I
 
 If you need to change your password, Darkdrive provides a full re-encryption mode that decrypts and re-encrypts every file, filename, and tag with the new key.
 
-**1.** Enable emergency mode by setting the constant `DARKDRIVE_EMERGENCY_PASSWORD` in `index.php` true
+**1.** Enable emergency mode by setting the constant `DARKDRIVE_EMERGENCY_PASSWORD` to `true` in `index.php`
 
 **2.** Open `/emergency` in your browser. A new password will be generated for you — write it down
 
