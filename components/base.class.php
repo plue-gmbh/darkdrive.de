@@ -257,7 +257,15 @@ class Base {
     if ($size > self::SAFETY_READ_LIMIT) return false;
     $csv = file_get_contents($file);
     if ($csv === false) return false;
-    if (preg_match('/(?:^|,)"?[=+\-@\t]/m', $csv)) return false;
+    $csv = preg_replace('/"(?:[^"]|"")*"/', '', $csv);
+    if ($csv === null) return false;
+    foreach (preg_split('/[\r\n,;]/', $csv) ?: [] as $field) {
+      $field = ltrim($field, ' ');
+      if ($field === '') continue;
+      $first = $field[0];
+      if ($first === '=' || $first === '@' || $first === "\t") return false;
+      if (($first === '-' || $first === '+') && preg_match('/[=(|!]/', $field)) return false;
+    }
     return true;
   }
 
