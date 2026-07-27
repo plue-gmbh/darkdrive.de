@@ -255,17 +255,21 @@ class Base {
     $size = filesize($file);
     if ($size === false) return false;
     if ($size > self::SAFETY_READ_LIMIT) return false;
-    $csv = file_get_contents($file);
-    if ($csv === false) return false;
-    $csv = preg_replace('/"(?:[^"]|"")*"/', '', $csv);
-    if ($csv === null) return false;
-    foreach (preg_split('/[\r\n,;]/', $csv) ?: [] as $field) {
-      $field = ltrim($field, ' ');
-      if ($field === '') continue;
-      $first = $field[0];
-      if ($first === '=' || $first === '@' || $first === "\t") return false;
-      if (($first === '-' || $first === '+') && preg_match('/[=(|!]/', $field)) return false;
+    $fh = fopen($file, 'r');
+    if ($fh === false) return false;
+    foreach ([',', ';', "\t", '|'] as $delim) {
+      rewind($fh);
+      while (($row = fgetcsv($fh, 0, $delim, '"', '')) !== false) {
+        foreach ($row as $field) {
+          $field = ltrim((string)$field, " \r\n\xEF\xBB\xBF");
+          if ($field === '') continue;
+          $first = $field[0];
+          if ($first === '=' || $first === '@' || $first === "\t") { fclose($fh); return false; }
+          if (($first === '-' || $first === '+') && preg_match('/[=(|!]/', $field)) { fclose($fh); return false; }
+        }
+      }
     }
+    fclose($fh);
     return true;
   }
 
