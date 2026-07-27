@@ -257,6 +257,8 @@ class Base {
     if ($size > self::SAFETY_READ_LIMIT) return false;
     $fh = fopen($file, 'r');
     if ($fh === false) return false;
+    $bom = fread($fh, 2);
+    if ($bom === "\xFF\xFE" || $bom === "\xFE\xFF") { fclose($fh); return false; }
     foreach ([',', ';', "\t", '|'] as $delim) {
       rewind($fh);
       while (($row = fgetcsv($fh, 0, $delim, '"', '')) !== false) {
