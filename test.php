@@ -478,32 +478,22 @@ unset($_SERVER['HTTP_X_FORWARDED_FOR']);
 check_eq('trusted proxy no XFF', $clientIp->invoke(null), '203.0.113.1');
 
 // --- Upload rate limit ---
+// check_rate_limit() resolves its counter through Base::data_path(), which
+// cannot be redirected in-process, so this covers the fail-closed half: an
+// unreadable counter must make fopen fail rather than wave the upload through.
 section('Upload rate limit');
-$rl = new ReflectionMethod('Upload', 'check_rate_limit');
-$rl->setAccessible(true);
-$tmpRate = tempnam(sys_get_temp_dir(), 'dd_rate_');
-$origDataPath = new ReflectionMethod('Base', 'data_path');
-// Test with empty rate file — should allow
-file_put_contents($tmpRate, '');
 $_SESSION = [];
-// Use a real tmp dir as data path for rate limit test
-$tmpDataDir = sys_get_temp_dir() . '/dd_test_' . getmypid();
-@mkdir($tmpDataDir);
-file_put_contents("$tmpDataDir/.upload_rate", '');
-$savedDataPath = null;
-// Base::data_path uses 'data' relative — we need to override it for the test
-// Instead, test the fail-closed behavior: unreadable file
-$unreadable = $tmpDataDir . '/.upload_rate_locked';
+$rateDir = sys_get_temp_dir() . '/dd_rate_' . getmypid();
+@mkdir($rateDir, 0700, true);
+$unreadable = $rateDir . '/.upload_rate';
 file_put_contents($unreadable, '');
 chmod($unreadable, 0000);
-// We can't easily test check_rate_limit without overriding data_path,
-// so test the core behavior: fopen failure returns false
 $fh = @fopen($unreadable, 'c+');
 check('inaccessible file → fopen fails', $fh === false);
 if ($fh) fclose($fh);
 chmod($unreadable, 0644);
-unlink($unreadable);
-@rmdir($tmpDataDir);
+@unlink($unreadable);
+@rmdir($rateDir);
 
 // --- Upload validation ---
 section('Upload validation');
@@ -1615,12 +1605,10 @@ check('delete_marker removes file', S3::read_marker($mFile) === false);
 
 // --- S3: all_files() deduplication ---
 section('Files::all_files() with S3 markers');
-$tmpFilesDir = sys_get_temp_dir() . '/dd_s3af_' . getmypid();
-@mkdir("$tmpFilesDir");
 $cachedFilesProp = new ReflectionProperty('Files', 'cachedFiles');
 $cachedFilesProp->setAccessible(true);
-$savedDataMethod = new ReflectionMethod('Base', 'data_path');
-// Use a real data/files dir with marker files for this test
+// Uses the real data/files dir so all_files() sees genuine markers alongside
+// local blobs; every fixture below is removed again at the end of the section.
 if (!is_dir('data/files')) @mkdir('data/files', 0755, true);
 $af1 = '20260101-120000-' . Crypto::encrypt_filename('file1.pdf', $pw);
 $af2 = '20260102-130000-' . Crypto::encrypt_filename('file2.mp3', $pw);
