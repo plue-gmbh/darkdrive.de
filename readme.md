@@ -1,6 +1,6 @@
 # Darkdrive
 
-![version](https://img.shields.io/badge/version-v517-blue)
+![version](https://img.shields.io/badge/version-v518-blue)
 ![license](https://img.shields.io/badge/license-AGPLv3-green)
 ![php](https://img.shields.io/badge/PHP-8.1%2B-777bb4)
 
