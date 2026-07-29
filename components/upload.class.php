@@ -4,6 +4,10 @@
 // Upload — file upload handling and storage management for Darkdrive
 //
 //   Validation:  file type, size, MIME, safety checks (SVG/XML/CSV sanitization)
+//   Contract:    an upload POST is marked with upload_request, so a request that
+//                arrives without its file answers with JSON instead of the page
+//   Success:     replies "<timestamped-name>|<clean-name>"; any other body is a
+//                failure the client must not mistake for a stored file
 //   Encryption:  encrypts directly from PHP tmp via Crypto (no plaintext in data/)
 //   Storage:     atomic file-locked byte counter, configurable quota enforcement
 //   Rate limit:  per-session upload throttle (max 1000 uploads / hour)
@@ -46,7 +50,10 @@ class Upload {
   public static function handle(): void {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') return;
     if (empty($_FILES['upload']) && empty($_POST) && (int)($_SERVER['CONTENT_LENGTH'] ?? 0) > 0) self::fail('payload_too_large');
-    if (empty($_FILES['upload'])) return;
+    if (empty($_FILES['upload'])) {
+      if (!empty($_POST['upload_request'])) self::fail('upload_missing');
+      return;
+    }
     if (!self::$instance?->active) self::fail('inactive');
     if (($_FILES['upload']['error'] ?? 0) !== UPLOAD_ERR_OK) self::fail('upload_error');
     if (empty($_POST['csrf_token']) || !isset($_SESSION['csrf_token'])

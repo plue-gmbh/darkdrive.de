@@ -334,6 +334,47 @@ check('fingerprinting is lane-limited',  str_contains($jsSrc, 'mapLimit(files, F
 check('picked files snapshot FileList',  str_contains($jsSrc, '[...e.target.files]'));
 check('shared uploads stay selected',    str_contains($jsSrc, 'fromShare') && str_contains($jsSrc, 'updateSelectionCount()'));
 
+// --- An abandoned share must not squat at the front of the queue ---
+// Entries were drained oldest-first and never expired, so leftovers from a
+// failed batch could fill the cap and a freshly shared file would never upload.
+section('Shared queue hygiene');
+check('share keys carry a timestamp',    str_contains($jsSrc, 'function shareKeyMeta'));
+check('stale shares are evicted',        str_contains($jsSrc, 'now - meta.ts > SHARE_TTL') && str_contains($jsSrc, 'cache.delete(req)'));
+check('newest batch drains first',       str_contains($jsSrc, 'b.meta.ts - a.meta.ts || a.meta.idx - b.meta.idx'));
+check('cap counted after eviction',      str_contains($jsSrc, 'live.length - take.length'));
+check('stale window is one week',        str_contains($jsSrc, 'SHARE_TTL   = 7 * 24 * 3600 * 1000'));
+if ($hasNode) {
+  // Round-trips a key built exactly as the service worker builds it, so the two
+  // files cannot drift apart on the token format without this failing.
+  $kmRunner = sys_get_temp_dir() . '/dd_km_' . getmypid() . '.js';
+  preg_match('/  function shareKeyMeta\(url\) \{.*?\n  \}/s', $jsSrc, $km);
+  file_put_contents($kmRunner, ($km[0] ?? '') . '
+const now = Date.now();
+function key(ts, i, name) {
+  const tok = ts.toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+  return "https://h/__shared/" + tok + "-" + i + "/" + encodeURIComponent(name);
+}
+const fresh = shareKeyMeta(key(now, 3, "p.jpg"));
+const old   = shareKeyMeta(key(now - 8 * 86400000, 0, "old.jpg"));
+const junk  = shareKeyMeta("https://h/__shared/__legacy__/x.jpg");
+console.log(JSON.stringify({
+  ts: fresh.ts === now, idx: fresh.idx === 3,
+  aged: old.ts === now - 8 * 86400000,
+  junk_never_stale: junk.ts === 0, junk_idx: junk.idx === 0
+}));');
+  $kmOut = json_decode(trim(shell_exec('node ' . escapeshellarg($kmRunner) . ' 2>&1') ?? ''), true);
+  @unlink($kmRunner);
+  if (!is_array($kmOut)) {
+    err('shareKeyMeta runs', 'no JSON output');
+  } else {
+    check('recovers the share timestamp', $kmOut['ts'] === true);
+    check('recovers the file index',      $kmOut['idx'] === true);
+    check('an old batch reads as old',    $kmOut['aged'] === true);
+    check('unparseable key never expires', $kmOut['junk_never_stale'] === true);
+    check('unparseable key sorts stably', $kmOut['junk_idx'] === true);
+  }
+}
+
 section('Offline page');
 check('offline route registered',        str_contains($appSrc, "'offline'"));
 check('offline_page method exists',      str_contains($appSrc, 'function offline_page'));
@@ -753,6 +794,52 @@ if (!$qNone || !$qSet || !$qDef) {
   check_eq('limited local refund balances',  $qSet['local_after'], 0);
   check_eq('limited s3 refund balances',     $qSet['s3_after'], 0);
 }
+
+// --- A reply that is not a stored filename must never read as success ---
+// An upload POST that lost its file used to fall through and render the page,
+// and the client took the last line of that HTML as the stored filename — so a
+// session that expired mid-batch reported success and silently dropped files.
+section('Upload response contract');
+check('upload posts are marked',        str_contains($jsSrc, "fd.append('upload_request', '1')"));
+check('marked post without file fails', str_contains($upSrc, "!empty(\$_POST['upload_request'])") && str_contains($upSrc, "self::fail('upload_missing')"));
+check('cache kept when reply is not JSON', str_contains($jsSrc, 'if (spoke && reason'));
+// Applies the client's own success pattern to a real server reply, so the two
+// sides cannot disagree about what a stored file looks like.
+if (preg_match('~if \(/(.+?)/\.test\(filename\)\)~', $jsSrc, $rm)) {
+  $jsShape = '/' . $rm[1] . '/';
+  $realName = date('Ymd-His') . '-' . Crypto::encrypt_filename('holiday.jpg', $pw);
+  check('client shape accepts a real upload reply', (bool)preg_match($jsShape, $realName));
+  check('client shape rejects an HTML page',       !preg_match($jsShape, '</html>'));
+  check('client shape rejects a JSON error',       !preg_match($jsShape, '{"error":"csrf"}'));
+  check('client shape rejects a bare word',        !preg_match($jsShape, 'false'));
+} else {
+  err('client success shape found', 'no /regex/.test(filename) in app.js');
+}
+// Subprocess per case: handle() exits, so each outcome needs its own process.
+$upcDir    = sys_get_temp_dir() . '/dd_upc_' . getmypid();
+$upcScript = $upcDir . '.php';
+@mkdir("$upcDir/files", 0755, true);
+file_put_contents($upcScript, '<?php
+define("DARKDRIVE_TITLE", "Test");
+define("DARKDRIVE_MAX_FILESIZE", 1024);
+define("DARKDRIVE_MAX_STORAGE", 1024);
+define("DARKDRIVE_STORAGE_DIR", ' . var_export($upcDir, true) . ');
+require ' . var_export("$dir/components/base.class.php", true) . ';
+require ' . var_export("$dir/components/crypto.class.php", true) . ';
+require ' . var_export("$dir/components/s3.class.php", true) . ';
+require ' . var_export("$dir/components/upload.class.php", true) . ';
+$_SERVER["REQUEST_METHOD"] = "POST";
+$_FILES = [];
+$_POST  = $argv[1] === "marked" ? ["upload_request" => "1"] : ["delete" => "x"];
+Upload::init(DARKDRIVE_STORAGE_DIR . "/files", true);
+Upload::handle();
+echo "FELL_THROUGH";
+');
+$upcMarked   = trim(shell_exec('php ' . escapeshellarg($upcScript) . ' marked 2>&1') ?? '');
+$upcUnmarked = trim(shell_exec('php ' . escapeshellarg($upcScript) . ' other 2>&1') ?? '');
+@unlink($upcScript); @rmdir("$upcDir/files"); @rmdir($upcDir);
+check_eq('lost file answers with JSON', $upcMarked, '{"error":"upload_missing"}');
+check_eq('other POSTs still fall through', $upcUnmarked, 'FELL_THROUGH');
 
 // --- Filenames from requests must name a real file, not just look like one ---
 // str_clean() strips '/' but keeps '.', so '..' survives shape validation and

@@ -719,6 +719,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
   const SHARE_CACHE = 'darkdrive-shared';
   const MAX_QUEUE   = 100;
+  const SHARE_TTL   = 7 * 24 * 3600 * 1000;
 
   function sharedCache() {
     if (!window.caches) return Promise.resolve(null);
@@ -923,6 +924,7 @@ document.addEventListener('DOMContentLoaded', function () {
       }
       const fd   = new FormData();
       fd.append('upload', file);
+      fd.append('upload_request', '1');
       if (file.darkdriveFingerprint) fd.append('fingerprint', file.darkdriveFingerprint);
       const csrfMeta = document.querySelector('meta[name="csrf-token"]');
       if (csrfMeta) fd.append('csrf_token', csrfMeta.content);
@@ -980,8 +982,8 @@ document.addEventListener('DOMContentLoaded', function () {
         const lines = xhr.responseText.trim().split('\n');
         const response = lines[lines.length - 1].trim();
         const bar = response.indexOf('|');
-        const filename = bar >= 0 ? response.slice(0, bar) : response;
-        if (filename && filename !== 'false' && !response.startsWith('{"error"')) {
+        const filename = bar > 0 ? response.slice(0, bar) : '';
+        if (/^\d{8}-\d{6}-/.test(filename)) {
           const fromShare = !!file.darkdriveCacheKey;
           dropShared(file);
           var tileUrl = new URL(location.href);
@@ -1022,9 +1024,10 @@ document.addEventListener('DOMContentLoaded', function () {
         } else {
           var errMsg = file.name;
           var reason = '';
-          try { var j = JSON.parse(response); reason = j.error || ''; if (j.detail) errMsg += ' — ' + j.detail; } catch(e) {}
+          var spoke = false;
+          try { var j = JSON.parse(response); spoke = true; reason = j.error || ''; if (j.detail) errMsg += ' — ' + j.detail; } catch(e) {}
           uploadErrors.push(errMsg);
-          if (reason !== 'rate_limited' && reason !== 'storage_full') dropShared(file);
+          if (spoke && reason !== 'rate_limited' && reason !== 'storage_full') dropShared(file);
           progressEl.remove();
           setTimeout(uploadNext, 200);
         }
@@ -1055,11 +1058,28 @@ document.addEventListener('DOMContentLoaded', function () {
     startUploads(picked);
   });
 
+  function shareKeyMeta(url) {
+    const seg   = new URL(url).pathname.split('/')[2] || '';
+    const parts = seg.split('-');
+    const ts    = parseInt(parts[0], 36);
+    const idx   = parseInt(parts[2], 10);
+    return { ts: ts > 0 ? ts : 0, idx: idx >= 0 ? idx : 0 };
+  }
+
   sharedCache().then(function (cache) {
     if (!cache) return;
     return cache.keys().then(function (keys) {
       if (keys.length === 0) return;
-      const take = keys.slice(0, MAX_QUEUE);
+      const now  = Date.now();
+      const live = [];
+      keys.forEach(function (req) {
+        const meta = shareKeyMeta(req.url);
+        if (meta.ts && now - meta.ts > SHARE_TTL) { cache.delete(req); return; }
+        live.push({ req: req, meta: meta });
+      });
+      if (live.length === 0) return;
+      live.sort(function (a, b) { return b.meta.ts - a.meta.ts || a.meta.idx - b.meta.idx; });
+      const take = live.slice(0, MAX_QUEUE).map(function (e) { return e.req; });
       return mapLimit(take, FP_LANES, function (req) {
         return cache.match(req).then(function (resp) {
           if (!resp) return null;
@@ -1073,7 +1093,7 @@ document.addEventListener('DOMContentLoaded', function () {
       }).then(function (files) {
         const ready = files.filter(Boolean);
         if (ready.length === 0) return;
-        queueExcess += keys.length - take.length;
+        queueExcess += live.length - take.length;
         startUploads(ready);
       });
     });
