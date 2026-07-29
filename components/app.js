@@ -982,6 +982,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const bar = response.indexOf('|');
         const filename = bar >= 0 ? response.slice(0, bar) : response;
         if (filename && filename !== 'false' && !response.startsWith('{"error"')) {
+          const fromShare = !!file.darkdriveCacheKey;
           dropShared(file);
           var tileUrl = new URL(location.href);
           tileUrl.search = '';
@@ -1002,6 +1003,12 @@ document.addEventListener('DOMContentLoaded', function () {
                   todayH2.insertAdjacentHTML('afterend', html);
                 } else {
                   section.insertAdjacentHTML('afterbegin', '<h2 class="gallery-date">Today</h2>' + html);
+                  todayH2 = section.firstElementChild;
+                }
+                var tile = todayH2 ? todayH2.nextElementSibling : null;
+                if (fromShare && tile && tile.dataset && tile.dataset.file) {
+                  tile.classList.add('selected');
+                  updateSelectionCount();
                 }
               }
               updateFooter(file.size);

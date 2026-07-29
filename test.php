@@ -279,6 +279,7 @@ check('queue cap restored',              str_contains($jsSrc, 'MAX_QUEUE   = 100
 check('batch sliced to cap',             str_contains($jsSrc, 'all.slice(0, MAX_QUEUE)'));
 check('fingerprinting is lane-limited',  str_contains($jsSrc, 'mapLimit(files, FP_LANES, fingerprint)'));
 check('picked files snapshot FileList',  str_contains($jsSrc, '[...e.target.files]'));
+check('shared uploads stay selected',    str_contains($jsSrc, 'fromShare') && str_contains($jsSrc, 'updateSelectionCount()'));
 
 section('Offline page');
 check('offline route registered',        str_contains($appSrc, "'offline'"));
