@@ -638,6 +638,66 @@ check('quota reserved before encryption',       $posQuota < $posStream);
 check('encrypt failure refunds quota',          str_contains($upSrc, 'self::update_storage_bytes(-$_FILES'));
 check('s3 encrypt failure refunds quota',       str_contains($upSrc, 'S3::update_s3_storage_bytes(-$_FILES'));
 
+// --- Filenames from requests must name a real file, not just look like one ---
+// str_clean() strips '/' but keeps '.', so '..' survives shape validation and
+// used to reach filesize()/unlink(). Every handler now gates on the listing.
+// Runs in a subprocess so DARKDRIVE_STORAGE_DIR can point at a scratch dir.
+section('Filename membership validation');
+$knownDir    = sys_get_temp_dir() . '/dd_known_' . getmypid();
+$knownScript = sys_get_temp_dir() . '/dd_known_' . getmypid() . '.php';
+@mkdir("$knownDir/files", 0755, true);
+touch("$knownDir/files/20250220-093015-aBc-_9xYz");
+touch("$knownDir/files/20250220-093016-legacy-photo.jpg");
+touch("$knownDir/files/20250220-093017-cloudfile.mp4.s3");
+file_put_contents($knownScript, '<?php
+define("DARKDRIVE_TITLE", "Test");
+define("DARKDRIVE_MAX_FILESIZE", 1024);
+define("DARKDRIVE_MAX_STORAGE", 1024);
+define("DARKDRIVE_STORAGE_DIR", ' . var_export($knownDir, true) . ');
+require ' . var_export("$dir/components/base.class.php", true) . ';
+require ' . var_export("$dir/components/crypto.class.php", true) . ';
+require ' . var_export("$dir/components/s3.class.php", true) . ';
+require ' . var_export("$dir/components/files.class.php", true) . ';
+$idem = true;
+foreach (Files::all_files() as $f) if (Base::str_clean($f) !== $f) $idem = false;
+echo json_encode([
+  "idempotent" => $idem,
+  "enc"        => Files::is_known("20250220-093015-aBc-_9xYz"),
+  "legacy"     => Files::is_known("20250220-093016-legacy-photo.jpg"),
+  "s3"         => Files::is_known("20250220-093017-cloudfile.mp4"),
+  "s3raw"      => Files::is_known("20250220-093017-cloudfile.mp4.s3"),
+  "dotdot"     => Files::is_known(Base::str_clean("..")),
+  "dot"        => Files::is_known(Base::str_clean(".")),
+  "empty"      => Files::is_known(""),
+  "absent"     => Files::is_known("20250220-093018-nope"),
+]);');
+$k = json_decode(trim(shell_exec('php ' . escapeshellarg($knownScript) . ' 2>&1') ?? ''), true);
+@unlink($knownScript);
+foreach (glob("$knownDir/files/*") ?: [] as $f) @unlink($f);
+@rmdir("$knownDir/files"); @rmdir($knownDir);
+check('str_clean idempotent on stored names', ($k['idempotent'] ?? null) === true);
+check('accepts encrypted filename',           ($k['enc'] ?? null) === true);
+check('accepts legacy filename',              ($k['legacy'] ?? null) === true);
+check('accepts s3-backed filename',           ($k['s3'] ?? null) === true);
+check('rejects raw .s3 marker name',          ($k['s3raw'] ?? null) === false);
+check('rejects ".."',                         ($k['dotdot'] ?? null) === false);
+check('rejects "."',                          ($k['dot'] ?? null) === false);
+check('rejects empty name',                   ($k['empty'] ?? null) === false);
+check('rejects absent file',                  ($k['absent'] ?? null) === false);
+$fsSrcK = file_get_contents("$dir/components/fileserver.class.php");
+$filesSrcK = file_get_contents("$dir/components/files.class.php");
+$baseSrcK = file_get_contents("$dir/components/base.class.php");
+check('delete gates on listing',       str_contains($fsSrcK, "\$_POST['delete']);\n    if (!Files::is_known"));
+check('bulk delete gates on listing',  str_contains($fsSrcK, "if (!Files::is_known(\$filename)) continue;"));
+check('edit save gates on listing',    str_contains($fsSrcK, "\$_POST['edit_save']);\n    if (!Files::is_known"));
+check('publish gates on listing',      str_contains($fsSrcK, "\$_POST['publish']);\n    if (!Files::is_known"));
+check('unpublish gates on listing',    str_contains($fsSrcK, "\$_POST['unpublish']);\n    if (!Files::is_known"));
+check('file serving gates on listing', str_contains($fsSrcK, "\$_GET['loadfile']);\n    if (!Files::is_known"));
+check('thumb serving gates on listing',str_contains($fsSrcK, "\$_GET['loadthumb']);\n    if (!Files::is_known"));
+check('render_tile gates on listing',  str_contains($filesSrcK, "\$_GET['render_tile']);\n    if (!self::is_known"));
+check('bulk tagging gates on listing',  str_contains($baseSrcK, 'if (!Files::is_known($f)) continue;'));
+check('single tagging gates on listing',str_contains($baseSrcK, 'if (!Files::is_known($file)) return;'));
+
 // --- Published files bypass PHP, so public/ is hardened via .htaccess ---
 // Opaque origin (no allow-same-origin) is what stops a shared HTML file from
 // riding the owner's session; allow-downloads keeps share links usable.

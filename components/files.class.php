@@ -382,6 +382,14 @@ class Files {
     return self::$cachedFiles;
   }
 
+  private static ?array $fileIndex = null;
+
+  public static function is_known(string $filename): bool {
+    if ($filename === '') return false;
+    if (self::$fileIndex === null) self::$fileIndex = array_flip(self::all_files());
+    return isset(self::$fileIndex[$filename]);
+  }
+
   public static function filtered_plain_size(): int {
     $total = 0;
     foreach (self::filtered_files() as $file) {
@@ -427,9 +435,7 @@ class Files {
   public static function handle_render_tile(): void {
     if (!isset($_GET['render_tile'])) return;
     $filename = Base::str_clean($_GET['render_tile']);
-    if (empty($filename)) return;
-    $filepath = Base::data_path('files/' . $filename);
-    if (!file_exists($filepath) && !file_exists(S3::marker_path($filename))) return;
+    if (!self::is_known($filename)) return;
     self::render_tile($filename);
     exit;
   }

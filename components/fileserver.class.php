@@ -27,7 +27,7 @@ class FileServer {
   public static function handle(): void {
     if (!isset($_GET['loadfile'])) return;
     $filename   = Base::str_clean($_GET['loadfile']);
-    if (empty($filename)) return;
+    if (!Files::is_known($filename)) return;
     $filepath   = Base::data_path('files/' . $filename);
     $markerPath = S3::marker_path($filename);
     $isLocal    = file_exists($filepath) && is_file($filepath);
@@ -323,7 +323,7 @@ class FileServer {
   public static function handle_thumb(): void {
     if (!isset($_GET['loadthumb'])) return;
     $filename  = Base::str_clean($_GET['loadthumb']);
-    if (empty($filename)) { http_response_code(404); exit; }
+    if (!Files::is_known($filename)) { http_response_code(404); exit; }
     $thumbpath = Base::data_path('thumbs/' . $filename);
 
     if (!file_exists($thumbpath)) {
@@ -408,7 +408,7 @@ class FileServer {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !isset($_POST['publish'])) return;
     if (!Base::csrf_verify()) return;
     $filename   = Base::str_clean($_POST['publish']);
-    if (empty($filename)) return;
+    if (!Files::is_known($filename)) return;
     $filepath   = Base::data_path('files/' . $filename);
     $markerPath = S3::marker_path($filename);
     $isS3       = !file_exists($filepath) && file_exists($markerPath);
@@ -450,7 +450,7 @@ class FileServer {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !isset($_POST['unpublish'])) return;
     if (!Base::csrf_verify()) return;
     $filename = Base::str_clean($_POST['unpublish']);
-    if (empty($filename)) return;
+    if (!Files::is_known($filename)) return;
 
     $pubPath = Files::public_path($filename);
     $pubDir  = dirname($pubPath);
@@ -469,7 +469,7 @@ class FileServer {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !isset($_POST['delete'])) return;
     if (!Base::csrf_verify()) return;
     $filename = Base::str_clean($_POST['delete']);
-    if (empty($filename)) return;
+    if (!Files::is_known($filename)) return;
     $filepath   = Base::data_path('files/' . $filename);
     $thumbpath  = Base::data_path('thumbs/' . $filename);
     $markerPath = S3::marker_path($filename);
@@ -515,7 +515,7 @@ class FileServer {
     foreach ($files as $raw) {
       if (!is_string($raw) || strlen($raw) > 512) continue;
       $filename = Base::str_clean($raw);
-      if (empty($filename)) continue;
+      if (!Files::is_known($filename)) continue;
       $filepath   = Base::data_path('files/' . $filename);
       $thumbpath  = Base::data_path('thumbs/' . $filename);
       $markerPath = S3::marker_path($filename);
@@ -557,7 +557,7 @@ class FileServer {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST' || empty($_POST['edit_save'])) return;
     if (!Base::csrf_verify()) return;
     $filename = Base::str_clean($_POST['edit_save']);
-    if (empty($filename)) return;
+    if (!Files::is_known($filename)) return;
     $realName = Files::real_name($filename);
     if (!Base::is_editable($realName)) return;
     $filePath   = Base::data_path('files/' . $filename);

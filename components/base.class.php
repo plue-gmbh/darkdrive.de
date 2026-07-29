@@ -762,7 +762,7 @@ class Base {
       foreach ($_POST['bulk_tag_files'] as $raw) {
         if (!is_string($raw) || strlen($raw) > 512) continue;
         $f = self::str_clean($raw);
-        if (empty($f)) continue;
+        if (!Files::is_known($f)) continue;
         $cleaned[] = $f;
         if (!$tagDir || !file_exists("{$tagDir}/{$f}.txt")) $allHaveTag = false;
       }
@@ -772,7 +772,7 @@ class Base {
     } else {
       if (strlen($_POST['file'] ?? '') > 512) return;
       $file = self::str_clean($_POST['file']);
-      if (empty($file)) return;
+      if (!Files::is_known($file)) return;
       $tagDir = self::resolve_tag_dir($tag);
       $exists = $tagDir && file_exists("{$tagDir}/{$file}.txt");
       $exists ? self::rm_tag($file, $tag) : self::set_tag($file, $tag);
