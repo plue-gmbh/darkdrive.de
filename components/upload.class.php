@@ -64,12 +64,6 @@ class Upload {
       if ($mime !== false && (preg_match('/php|x-httpd/i', $mime))) self::fail('blocked_type', $password);
     }
     if ($_FILES['upload']['size'] > DARKDRIVE_MAX_FILESIZE * 1024 * 1024) self::fail('file_too_large', $password);
-    $isS3 = S3::is_configured();
-    if ($isS3) {
-      if (!S3::check_s3_quota($_FILES['upload']['size'])) self::fail('storage_full', $password);
-    } else {
-      if (!self::check_storage_quota($_FILES['upload']['size'])) self::fail('storage_full', $password);
-    }
     if ($uploadExt === 'svg' && !Base::is_safe_svg($_FILES['upload']['tmp_name'])) self::fail('unsafe_content', $password);
     if ($uploadExt === 'xml' && !Base::is_safe_xml($_FILES['upload']['tmp_name'])) self::fail('unsafe_content', $password);
     if ($uploadExt === 'csv' && !Base::is_safe_csv($_FILES['upload']['tmp_name'])) self::fail('unsafe_content', $password);
@@ -82,6 +76,12 @@ class Upload {
     $ts       = date('Ymd-His');
     $encName  = Crypto::encrypt_filename($clean, $password);
     if ($encName === false) { Base::memzero($password); Crypto::clear_cache(); self::fail('encrypt_failed'); }
+    $isS3 = S3::is_configured();
+    if ($isS3) {
+      if (!S3::check_s3_quota($_FILES['upload']['size'])) self::fail('storage_full', $password);
+    } else {
+      if (!self::check_storage_quota($_FILES['upload']['size'])) self::fail('storage_full', $password);
+    }
     $filename = $ts . '-' . $encName;
     $filepath = self::$instance->directory . "/{$filename}";
     $tmpPath = $_FILES['upload']['tmp_name'];

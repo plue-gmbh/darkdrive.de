@@ -617,6 +617,26 @@ check('dedupe caps hashes per request',  str_contains($upSrc, 'DEDUPE_MAX_HASHES
 check('dedupe validates hash format',    str_contains($upSrc, "preg_match('/^[0-9a-f]{64}\$/'"));
 check('dedupe read takes a lock',        str_contains($upSrc, 'flock($fh, LOCK_EX)') && str_contains($upSrc, 'dedupe_sync'));
 
+// --- Upload quota is reserved only once the upload can no longer be rejected ---
+// check_storage_quota() writes the reservation to disk, so every rejection that
+// runs after it leaks quota until the (rarely reached) hourly recalc.
+section('Upload quota reservation order');
+$posQuota  = strpos($upSrc, 'check_storage_quota($_FILES');
+$posSvg    = strpos($upSrc, "\$uploadExt === 'svg'");
+$posXml    = strpos($upSrc, "\$uploadExt === 'xml'");
+$posCsv    = strpos($upSrc, "\$uploadExt === 'csv'");
+$posRate   = strpos($upSrc, '!self::check_rate_limit()');
+$posEncNam = strpos($upSrc, "\$encName === false");
+$posStream = strpos($upSrc, 'Crypto::encrypt_stream($tmpPath');
+check('quota reserved after svg safety check',  $posQuota > $posSvg);
+check('quota reserved after xml safety check',  $posQuota > $posXml);
+check('quota reserved after csv safety check',  $posQuota > $posCsv);
+check('quota reserved after rate limit',        $posQuota > $posRate);
+check('quota reserved after filename encrypt',  $posQuota > $posEncNam);
+check('quota reserved before encryption',       $posQuota < $posStream);
+check('encrypt failure refunds quota',          str_contains($upSrc, 'self::update_storage_bytes(-$_FILES'));
+check('s3 encrypt failure refunds quota',       str_contains($upSrc, 'S3::update_s3_storage_bytes(-$_FILES'));
+
 // --- Login / Auth ---
 section('Login / Auth');
 // Login instance state
