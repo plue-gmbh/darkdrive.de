@@ -638,6 +638,72 @@ check('quota reserved before encryption',       $posQuota < $posStream);
 check('encrypt failure refunds quota',          str_contains($upSrc, 'self::update_storage_bytes(-$_FILES'));
 check('s3 encrypt failure refunds quota',       str_contains($upSrc, 'S3::update_s3_storage_bytes(-$_FILES'));
 
+// --- A refund only balances if the check reserved in the first place ---
+// The failure paths above debit unconditionally, so the quota check has to
+// reserve even when no limit is configured — otherwise the counter walks
+// down to zero. S3 ships with its limit constant commented out, so the
+// unlimited case is the default there, not an edge case.
+// Subprocess: the limit is a constant, so each case needs its own process.
+$quotaProbe = function (string $case, ?int $localMb, ?int $s3Mb) use ($dir): array {
+  $qDir    = sys_get_temp_dir() . '/dd_quota_' . getmypid() . '_' . $case;
+  $qScript = $qDir . '.php';
+  @mkdir("$qDir/files", 0755, true);
+  file_put_contents($qScript, '<?php
+define("DARKDRIVE_TITLE", "Test");
+define("DARKDRIVE_MAX_FILESIZE", 1024);
+' . ($localMb === null ? '' : 'define("DARKDRIVE_MAX_STORAGE", ' . $localMb . ');') . '
+' . ($s3Mb === null ? '' : 'define("DARKDRIVE_S3_MAX_STORAGE", ' . $s3Mb . ');') . '
+define("DARKDRIVE_STORAGE_DIR", ' . var_export($qDir, true) . ');
+require ' . var_export("$dir/components/base.class.php", true) . ';
+require ' . var_export("$dir/components/crypto.class.php", true) . ';
+require ' . var_export("$dir/components/upload.class.php", true) . ';
+require ' . var_export("$dir/components/s3.class.php", true) . ';
+$read = function (string $f) { return (int)trim((string)@file_get_contents(DARKDRIVE_STORAGE_DIR . "/" . $f)); };
+$okLocal = Upload::check_storage_quota(1000);
+$okS3    = S3::check_s3_quota(1000);
+$resLocal = $read(".storage_bytes");
+$resS3    = $read(".storage_bytes_s3");
+Upload::update_storage_bytes(-1000);
+S3::update_s3_storage_bytes(-1000);
+echo json_encode([
+  "local_allowed"  => $okLocal,
+  "s3_allowed"     => $okS3,
+  "local_reserved" => $resLocal,
+  "s3_reserved"    => $resS3,
+  "local_after"    => $read(".storage_bytes"),
+  "s3_after"       => $read(".storage_bytes_s3"),
+]);
+');
+  $out = json_decode(trim(shell_exec('php ' . escapeshellarg($qScript) . ' 2>&1') ?? ''), true);
+  foreach (glob("$qDir/{,.}*", GLOB_BRACE) ?: [] as $f) { if (is_file($f)) @unlink($f); }
+  @unlink($qScript);
+  @rmdir("$qDir/files"); @rmdir($qDir);
+  return is_array($out) ? $out : [];
+};
+// 0 is the explicit "unlimited" setting; leaving both constants undefined is
+// what a stock index.php does, and that already means unlimited for S3.
+$qNone = $quotaProbe('zero', 0, 0);
+$qSet  = $quotaProbe('set', 1024, 1024);
+$qDef  = $quotaProbe('default', null, null);
+if (!$qNone || !$qSet || !$qDef) {
+  err('quota subprocess ran', 'no JSON output');
+} else {
+  check_eq('undefined s3 limit still reserves', $qDef['s3_reserved'], 1000);
+  check_eq('undefined local limit reserves',    $qDef['local_reserved'], 1000);
+  check('unlimited local upload allowed',    $qNone['local_allowed'] === true);
+  check('unlimited s3 upload allowed',       $qNone['s3_allowed'] === true);
+  check_eq('unlimited local still reserves', $qNone['local_reserved'], 1000);
+  check_eq('unlimited s3 still reserves',    $qNone['s3_reserved'], 1000);
+  check_eq('unlimited local refund balances', $qNone['local_after'], 0);
+  check_eq('unlimited s3 refund balances',    $qNone['s3_after'], 0);
+  check('limited local upload allowed',      $qSet['local_allowed'] === true);
+  check('limited s3 upload allowed',         $qSet['s3_allowed'] === true);
+  check_eq('limited local reserves',         $qSet['local_reserved'], 1000);
+  check_eq('limited s3 reserves',            $qSet['s3_reserved'], 1000);
+  check_eq('limited local refund balances',  $qSet['local_after'], 0);
+  check_eq('limited s3 refund balances',     $qSet['s3_after'], 0);
+}
+
 // --- Filenames from requests must name a real file, not just look like one ---
 // str_clean() strips '/' but keeps '.', so '..' survives shape validation and
 // used to reach filesize()/unlink(). Every handler now gates on the listing.
@@ -800,6 +866,70 @@ check('2.4 rule guarded by mod_authz_core', str_contains(Base::DATA_HTACCESS, '<
 check('2.2 fallback guarded by negation',   str_contains(Base::DATA_HTACCESS, '<IfModule !mod_authz_core.c>'));
 check('written on boot, not only setup',    str_contains($appSrcM, 'Base::protect_data_dir();'));
 check('stale deny file is rewritten',       str_contains($baseSrcM, 'self::DATA_HTACCESS'));
+
+// --- The deny file is only protection if the write actually landed ---
+// protect_data_dir() swallows write errors, so a read-only data/ would leave
+// the dir exposed while status still claimed Apache had it covered. Status
+// now reads the file back instead of trusting the server banner.
+$statusSrcD = file_get_contents("$dir/components/status.class.php");
+check('status verifies the deny file',      str_contains($statusSrcD, 'file_get_contents($denyFile) === Base::DATA_HTACCESS'));
+check('apache alone no longer counts',      str_contains($statusSrcD, '($isApache && $denyCurrent)'));
+check('stale deny file gets its own hint',  str_contains($statusSrcD, 'could not be rewritten'));
+
+// --- Cached status must not outlive the files it summarizes ---
+// Upload closes the session before touching storage, so the cache cannot be
+// invalidated on the write side; the read side compares a cheap mtime stamp.
+// Subprocess: needs its own DARKDRIVE_STORAGE_DIR to mutate.
+$stampDir    = sys_get_temp_dir() . '/dd_stamp_' . getmypid();
+$stampScript = $stampDir . '.php';
+@mkdir("$stampDir/files", 0755, true);
+@mkdir("$stampDir/thumbs", 0755, true);
+file_put_contents($stampScript, '<?php
+define("DARKDRIVE_TITLE", "Test");
+define("DARKDRIVE_MAX_FILESIZE", 1024);
+define("DARKDRIVE_MAX_STORAGE", 1024);
+define("DARKDRIVE_STORAGE_DIR", ' . var_export($stampDir, true) . ');
+require ' . var_export("$dir/components/base.class.php", true) . ';
+require ' . var_export("$dir/components/app.class.php", true) . ';
+$m = new ReflectionMethod("App", "status_stamp"); $m->setAccessible(true);
+$stamp = fn() => $m->invoke(null);
+$a = $stamp();
+$b = $stamp();
+clearstatcache();
+touch(DARKDRIVE_STORAGE_DIR . "/files", time() + 10);
+clearstatcache();
+$afterUpload = $stamp();
+touch(DARKDRIVE_STORAGE_DIR . "/.storage_bytes", time() + 20);
+clearstatcache();
+$afterCounter = $stamp();
+@unlink(DARKDRIVE_STORAGE_DIR . "/.htaccess");
+Base::protect_data_dir();
+$written = (string)@file_get_contents(DARKDRIVE_STORAGE_DIR . "/.htaccess");
+file_put_contents(DARKDRIVE_STORAGE_DIR . "/.htaccess", "Deny from all\n");
+Base::protect_data_dir();
+$healed = (string)@file_get_contents(DARKDRIVE_STORAGE_DIR . "/.htaccess");
+echo json_encode([
+  "stable"        => $a === $b,
+  "upload_moves"  => $afterUpload !== $a,
+  "counter_moves" => $afterCounter !== $afterUpload,
+  "writes_deny"   => $written === Base::DATA_HTACCESS,
+  "heals_legacy"  => $healed === Base::DATA_HTACCESS,
+]);
+');
+$stampOut = json_decode(trim(shell_exec('php ' . escapeshellarg($stampScript) . ' 2>&1') ?? ''), true);
+foreach (glob("$stampDir/{,.}*", GLOB_BRACE) ?: [] as $f) { if (is_file($f)) @unlink($f); }
+@unlink($stampScript); @rmdir("$stampDir/files"); @rmdir("$stampDir/thumbs"); @rmdir($stampDir);
+if (!is_array($stampOut)) {
+  err('status stamp subprocess ran', 'no JSON output');
+} else {
+  check('stamp is stable when idle',       $stampOut['stable'] === true);
+  check('stamp moves when a file lands',   $stampOut['upload_moves'] === true);
+  check('stamp moves when bytes change',   $stampOut['counter_moves'] === true);
+  check('protect_data_dir writes the deny',$stampOut['writes_deny'] === true);
+  check('legacy Deny from all is healed',  $stampOut['heals_legacy'] === true);
+}
+check('status cache keyed on the stamp',   str_contains($appSrcM, "(\$cache['stamp'] ?? null) === \$stamp"));
+check('status cache stores the stamp',     str_contains($appSrcM, "'stamp' => \$stamp"));
 
 section('Thumbnail temp isolation');
 $filesSrcM = file_get_contents("$dir/components/files.class.php");

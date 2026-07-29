@@ -385,17 +385,17 @@ class S3 {
 
   public static function check_s3_quota(int $add_bytes): bool {
     $limit_mb = defined('DARKDRIVE_S3_MAX_STORAGE') ? (int)DARKDRIVE_S3_MAX_STORAGE : 0;
-    if ($limit_mb <= 0) return true;
+    $unlimited = $limit_mb <= 0;
     $counter = Base::data_path('.storage_bytes_s3');
     $fh = @fopen($counter, 'c+');
-    if (!$fh) return false;
-    if (!flock($fh, LOCK_EX)) { fclose($fh); return false; }
+    if (!$fh) return $unlimited;
+    if (!flock($fh, LOCK_EX)) { fclose($fh); return $unlimited; }
     $contents = stream_get_contents($fh);
     $current = max(0, (int)trim($contents ?: '0'));
     $needs_recalc = ($current === 0 && ($contents === false || trim($contents) !== '0'));
     if ($needs_recalc) $current = self::recalc_s3_storage();
     $limit = $limit_mb * 1024 * 1024;
-    if ($current + $add_bytes > $limit) {
+    if (!$unlimited && $current + $add_bytes > $limit) {
       flock($fh, LOCK_UN);
       fclose($fh);
       return false;

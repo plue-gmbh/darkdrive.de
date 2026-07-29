@@ -181,8 +181,13 @@ class Status {
     $checks[] = self::chk('Enc-Key via cookie', $hasEncCookie, $hasEncCookie ? 'present' : 'missing');
 
     $isApache = stripos($_SERVER['SERVER_SOFTWARE'] ?? '', 'apache') !== false;
-    $dataProtected = ($outside && !$isLink) || $isApache;
-    $checks[] = self::chk('data/ web-protected', $dataProtected, $dataProtected ? '' : 'set DARKDRIVE_STORAGE_DIR or add an nginx location block');
+    $denyFile = Base::data_path('.htaccess');
+    $denyCurrent = is_file($denyFile) && file_get_contents($denyFile) === Base::DATA_HTACCESS;
+    $dataProtected = ($outside && !$isLink) || ($isApache && $denyCurrent);
+    $denyHint = $isApache && !$denyCurrent
+      ? 'data/.htaccess is missing or stale and could not be rewritten — check permissions'
+      : 'set DARKDRIVE_STORAGE_DIR or add an nginx location block';
+    $checks[] = self::chk('data/ web-protected', $dataProtected, $dataProtected ? '' : $denyHint);
 
     $sessionSecure = (bool)(session_get_cookie_params()['secure'] ?? false);
     $sessionHttpOnly = (bool)(session_get_cookie_params()['httponly'] ?? false);

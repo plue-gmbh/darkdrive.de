@@ -352,17 +352,17 @@ class Upload {
 
   public static function check_storage_quota(int $addBytes): bool {
     $storageLimitMB = defined('DARKDRIVE_MAX_STORAGE') ? DARKDRIVE_MAX_STORAGE : 1024;
-    if ($storageLimitMB <= 0) return true;
+    $unlimited = $storageLimitMB <= 0;
     $counter = Base::data_path('.storage_bytes');
     $fh = @fopen($counter, 'c+');
-    if (!$fh) return false;
-    if (!flock($fh, LOCK_EX)) { fclose($fh); return false; }
+    if (!$fh) return $unlimited;
+    if (!flock($fh, LOCK_EX)) { fclose($fh); return $unlimited; }
     $contents = stream_get_contents($fh);
     $current = max(0, (int)trim($contents ?: '0'));
     $needs_recalc = ($current === 0 && ($contents === false || trim($contents) !== '0'));
     if ($needs_recalc) $current = self::recalc_storage();
     $limitBytes = $storageLimitMB * 1024 * 1024;
-    if ($current + $addBytes > $limitBytes) {
+    if (!$unlimited && $current + $addBytes > $limitBytes) {
       flock($fh, LOCK_UN);
       fclose($fh);
       return false;

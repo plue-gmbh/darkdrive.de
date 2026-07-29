@@ -48,6 +48,8 @@ Always run Darkdrive behind HTTPS — your password travels to the server at log
 - Password storage: `SPLITKEY:` bcrypt of the derived auth key
 - Duplicate index: content fingerprints stored as HMAC-SHA256 under a key derived from your encryption key, so the index reveals nothing about what you store
 
+**Publicly shared files** are written decrypted into `public/`, where they are served directly by the web server without passing through PHP. On Apache, Darkdrive keeps a managed `.htaccess` there that sandboxes them into an opaque origin, so a shared HTML or SVG file still renders and downloads but cannot reach your session or the API. On nginx that file is ignored — the status page flags this, and you should add an equivalent `Content-Security-Policy: sandbox allow-scripts allow-downloads` header for `/public/` in your server config.
+
 ---
 
 ## Installation
@@ -64,7 +66,7 @@ define('DARKDRIVE_STORAGE_DIR', '/home/my_data');
 
 With the directory outside the web root, no URL can ever reach your encrypted files or the password hash — on any web server. Setting this first means the app writes straight to its final location and never creates a `data/` inside the web root. Without it, data lives in `data/` inside the web root:
 
-- **Apache** — still protected: Darkdrive writes a `Deny from all` `.htaccess` into `data/` automatically
+- **Apache** — still protected: Darkdrive writes a deny-all `.htaccess` into `data/` automatically, and rewrites it on every request if it is missing or edited, so treat that file as managed rather than as a place for your own rules. If it cannot be written, the status page reports `data/` as unprotected instead of assuming Apache has it covered
 - **nginx** — **not protected**: nginx ignores `.htaccess`, so you must either set `DARKDRIVE_STORAGE_DIR` (recommended) or block the directory in your server config — `data/` contains the password hash, and leaving it reachable enables offline brute-force attacks:
 
   ```nginx
@@ -159,6 +161,8 @@ In scope: `components/`, the auto-updater, the session and split-key flow, file 
 ## Updates
 
 Darkdrive checks for new releases and installs them automatically. A new release is held for a maturity window before it is offered, so a bad build can be pulled before it reaches installs. Set the wait with `DARKDRIVE_UPDATE_DELAY` in `index.php`, in days: `0` offers updates immediately, `1` (the default) waits 24 h, `2` waits two days, `INF` disables update offers entirely.
+
+Updates read every older file format, but not the reverse: once a release writes a newer on-disk format, downgrading `components/` to an earlier version can leave files it cannot open. Roll forward rather than back, and keep a backup before pinning an old build.
 
 ---
 

@@ -535,9 +535,19 @@ Copyright © <?= date('Y') ?> plue GmbH – https://plue.tech
     <?php
   }
 
+  private static function status_stamp(): string {
+    $parts = [];
+    foreach (['files', 'thumbs', '.storage_bytes', '.storage_bytes_s3'] as $p) {
+      $parts[] = (int)@filemtime(Base::data_path($p));
+    }
+    return implode('-', $parts);
+  }
+
   private static function compute_status(): void {
     $cache = $_SESSION['status_cache'] ?? null;
-    if (!isset($_GET['status']) && is_array($cache) && (time() - (int)($cache['t'] ?? 0)) < 60) {
+    $stamp = self::status_stamp();
+    if (!isset($_GET['status']) && is_array($cache) && (time() - (int)($cache['t'] ?? 0)) < 60
+        && ($cache['stamp'] ?? null) === $stamp) {
       self::$storagePct   = $cache['pct'];
       self::$statusErrors = (bool)$cache['err'];
       return;
@@ -596,7 +606,7 @@ Copyright © <?= date('Y') ?> plue GmbH – https://plue.tech
         if ((int)$ma[1] < 256 * 1024) self::$statusErrors = true;
       }
     }
-    $_SESSION['status_cache'] = ['t' => time(), 'pct' => self::$storagePct, 'err' => self::$statusErrors];
+    $_SESSION['status_cache'] = ['t' => time(), 'stamp' => $stamp, 'pct' => self::$storagePct, 'err' => self::$statusErrors];
   }
 
   public static function header(): void {
