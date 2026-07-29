@@ -7,10 +7,14 @@
 //   Encryption:  encrypts directly from PHP tmp via Crypto (no plaintext in data/)
 //   Storage:     atomic file-locked byte counter, configurable quota enforcement
 //   Rate limit:  per-session upload throttle (max 1000 uploads / hour)
+//   Dedupe:      client sends a content fingerprint; index stores it HMAC'd with
+//                the encryption key, so re-shared files are skipped without re-upload
 //   Thumbnails:  auto-generates image thumbs on upload via GD
 //
 
 class Upload {
+
+  const DEDUPE_MAX_HASHES = 200;
 
   private string $directory;
   private bool $active;
@@ -154,9 +158,102 @@ class Upload {
     }
 
     if (!empty($_GET['tag'])) Base::set_tag($filename, Base::str_clean($_GET['tag']));
+    if (!empty($_POST['fingerprint']) && is_string($_POST['fingerprint']) && preg_match('/^[0-9a-f]{64}$/', $_POST['fingerprint'])) {
+      self::dedupe_record($_POST['fingerprint'], $filename, $password);
+    }
     Base::memzero($password);
     Crypto::clear_cache();
     exit($filename . '|' . $clean);
+  }
+
+  private static function dedupe_path(): string {
+    return Base::data_path('.dedupe');
+  }
+
+  private static function dedupe_tag(string $fingerprint, string $password): string {
+    $key = hash_hmac('sha256', 'darkdrive-dedupe-v1', $password . Base::instance_key(), true);
+    $tag = hash_hmac('sha256', $fingerprint, $key);
+    Base::memzero($key);
+    return $tag;
+  }
+
+  private static function dedupe_parse(string $raw): array {
+    $map = [];
+    foreach (explode("\n", $raw) as $line) {
+      $sep = strpos($line, '|');
+      if ($sep === false) continue;
+      $map[substr($line, 0, $sep)] = substr($line, $sep + 1);
+    }
+    return $map;
+  }
+
+  private static function dedupe_serialize(array $map): string {
+    $out = '';
+    foreach ($map as $tag => $filename) $out .= $tag . '|' . $filename . "\n";
+    return $out;
+  }
+
+  private static function stored_names(): array {
+    $dir = Base::data_path('files');
+    if (!is_dir($dir)) return [];
+    $names = @scandir($dir);
+    return $names === false ? [] : array_flip($names);
+  }
+
+  private static function dedupe_sync(): array {
+    $path = self::dedupe_path();
+    if (!is_file($path)) return [];
+    $fh = @fopen($path, 'c+');
+    if (!$fh) return [];
+    if (!flock($fh, LOCK_EX)) { fclose($fh); return []; }
+    $raw    = (string)stream_get_contents($fh);
+    $stored = self::stored_names();
+    $keep   = [];
+    foreach (self::dedupe_parse($raw) as $tag => $filename) {
+      if (isset($stored[$filename]) || isset($stored[$filename . '.s3'])) $keep[$tag] = $filename;
+    }
+    $out = self::dedupe_serialize($keep);
+    if ($out !== $raw) {
+      ftruncate($fh, 0);
+      rewind($fh);
+      fwrite($fh, $out);
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $keep;
+  }
+
+  private static function dedupe_record(string $fingerprint, string $filename, string $password): void {
+    if ($fingerprint === '') return;
+    $fh = @fopen(self::dedupe_path(), 'c+');
+    if (!$fh) return;
+    if (!flock($fh, LOCK_EX)) { fclose($fh); return; }
+    fseek($fh, 0, SEEK_END);
+    fwrite($fh, self::dedupe_tag($fingerprint, $password) . '|' . $filename . "\n");
+    flock($fh, LOCK_UN);
+    fclose($fh);
+  }
+
+  public static function handle_dedupe_check(): void {
+    if (!isset($_GET['dedupe'])) return;
+    header('Content-Type: application/json');
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !Base::csrf_verify()) { http_response_code(403); exit('{}'); }
+    $password = Base::enc_key();
+    if ($password === '') { http_response_code(403); exit('{}'); }
+    $keep   = self::dedupe_sync();
+    $seen   = [];
+    $hashes = is_array($_POST['hashes'] ?? null) ? array_slice($_POST['hashes'], 0, self::DEDUPE_MAX_HASHES) : [];
+    foreach ($hashes as $fingerprint) {
+      if (!is_string($fingerprint) || !preg_match('/^[0-9a-f]{64}$/', $fingerprint)) continue;
+      if (isset($keep[self::dedupe_tag($fingerprint, $password)])) $seen[] = $fingerprint;
+    }
+    Base::memzero($password);
+    Crypto::clear_cache();
+    exit(json_encode(['known' => $seen]));
+  }
+
+  public static function clear_dedupe(): void {
+    @unlink(self::dedupe_path());
   }
 
   private static function check_rate_limit(): bool {

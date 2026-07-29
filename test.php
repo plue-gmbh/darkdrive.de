@@ -261,6 +261,25 @@ check('cleans old caches on activate',   str_contains($swMethod, 'caches.delete'
 check('navigate → offline fallback',     str_contains($swMethod, 'navigate') && str_contains($swMethod, '/offline'));
 check('only handles GET',               str_contains($swMethod, "!=='GET'"));
 
+section('Share target');
+$jsSrc = file_get_contents("$dir/components/app.js");
+check('manifest declares share_target',  str_contains($appSrc, "'share_target'"));
+check('share_target posts to /share',    str_contains($appSrc, "'action'  => '/share'"));
+check('share route mapped',              str_contains($appSrc, "\$p === 'share'"));
+check('dedupe route mapped',             str_contains($appSrc, "\$p === 'dedupe'"));
+check('no-SW fallback flags failure',    str_contains($appSrc, 'share_failed=nosw'));
+check('SW intercepts POST /share',       str_contains($swMethod, "req.method==='POST'") && str_contains($swMethod, "==='/share'"));
+check('SW caches share to SHARED',       str_contains($swMethod, "SHARED='darkdrive-shared'"));
+check('SW share keys are unique',        str_contains($swMethod, 'Math.random()'));
+check('SW cache failure flags failure',  str_contains($swMethod, 'share_failed=cache'));
+check('activate keeps shared cache',     str_contains($swMethod, 'k!==CACHE&&k!==SHARED'));
+check('drain not gated on shared=1',    !str_contains($jsSrc, "indexOf('shared=1')"));
+check('shared files kept until stored',  str_contains($jsSrc, 'darkdriveCacheKey') && str_contains($jsSrc, 'dropShared'));
+check('queue cap restored',              str_contains($jsSrc, 'MAX_QUEUE   = 100'));
+check('batch sliced to cap',             str_contains($jsSrc, 'all.slice(0, MAX_QUEUE)'));
+check('fingerprinting is lane-limited',  str_contains($jsSrc, 'mapLimit(files, FP_LANES, fingerprint)'));
+check('picked files snapshot FileList',  str_contains($jsSrc, '[...e.target.files]'));
+
 section('Offline page');
 check('offline route registered',        str_contains($appSrc, "'offline'"));
 check('offline_page method exists',      str_contains($appSrc, 'function offline_page'));
@@ -281,6 +300,9 @@ check('listens to online event',         str_contains($offJsSrc, "'online'"));
 check('listens to offline event',        str_contains($offJsSrc, "'offline'"));
 check('registers service worker',        str_contains($offJsSrc, "register('/sw')"));
 check('auto-reconnects via offline-retry', str_contains($offJsSrc, 'offline-retry'));
+check('logged-out share is announced',   str_contains($offJsSrc, 'log in to upload'));
+check('logged-in share fallback notice', str_contains($offJsSrc, 'open All Files to upload'));
+check('share_failed notice on any page', str_contains($offJsSrc, 'share_failed'));
 
 // ── 2. Unit tests ─────────────────────────────────────────────────────────────
 
@@ -507,6 +529,92 @@ Upload::init('/tmp/other', false);
 $inst2 = $uInst->getValue();
 check_eq('Upload re-init directory', $uDir->getValue($inst2), '/tmp/other');
 check_eq('Upload re-init active=false', $uActive->getValue($inst2), false);
+
+// --- Upload dedupe index ---
+// Runs in a subprocess so DARKDRIVE_STORAGE_DIR can point at a scratch dir
+// without affecting the data_path() of every other test in this file.
+section('Upload dedupe index');
+$dedupeDir    = sys_get_temp_dir() . '/dd_dedupe_' . getmypid();
+$dedupeScript = sys_get_temp_dir() . '/dd_dedupe_' . getmypid() . '.php';
+@mkdir("$dedupeDir/files", 0755, true);
+file_put_contents($dedupeScript, '<?php
+define("DARKDRIVE_TITLE", "Test");
+define("DARKDRIVE_MAX_FILESIZE", 1024);
+define("DARKDRIVE_MAX_STORAGE", 1024);
+define("DARKDRIVE_STORAGE_DIR", ' . var_export($dedupeDir, true) . ');
+require ' . var_export("$dir/components/app.class.php", true) . ';
+require ' . var_export("$dir/components/base.class.php", true) . ';
+require ' . var_export("$dir/components/upload.class.php", true) . ';
+$m = function (string $name) { $r = new ReflectionMethod("Upload", $name); $r->setAccessible(true); return $r; };
+$tag = $m("dedupe_tag"); $rec = $m("dedupe_record"); $sync = $m("dedupe_sync"); $path = $m("dedupe_path");
+$pw = "pw-one"; $pw2 = "pw-two";
+$fpA = str_repeat("a", 64); $fpB = str_repeat("b", 64); $fpC = str_repeat("c", 64);
+$tA  = $tag->invoke(null, $fpA, $pw);
+$dir = DARKDRIVE_STORAGE_DIR . "/files";
+touch("$dir/20250101-120000-aaa");
+touch("$dir/20250102-120000-bbb.s3");
+$rec->invoke(null, $fpA, "20250101-120000-aaa", $pw);
+$rec->invoke(null, $fpB, "20250102-120000-bbb", $pw);
+$rec->invoke(null, $fpC, "20250103-120000-ccc", $pw);
+$rec->invoke(null, $fpA, "20250101-120000-aaa", $pw);
+$file   = $path->invoke(null);
+$before = substr_count((string)file_get_contents($file), "\n");
+$keep   = $sync->invoke(null);
+$after  = substr_count((string)file_get_contents($file), "\n");
+$raw    = (string)file_get_contents($file);
+Upload::clear_dedupe();
+echo json_encode([
+  "deterministic" => $tA === $tag->invoke(null, $fpA, $pw),
+  "pw_separated"  => $tA !== $tag->invoke(null, $fpA, $pw2),
+  "fp_separated"  => $tA !== $tag->invoke(null, $fpB, $pw),
+  "taglen"        => strlen($tA),
+  "taghex"        => (bool) preg_match("/^[0-9a-f]{64}$/", $tA),
+  "lines_before"  => $before,
+  "lines_after"   => $after,
+  "keeps_plain"   => isset($keep[$tA]),
+  "keeps_s3"      => isset($keep[$tag->invoke(null, $fpB, $pw)]),
+  "drops_stale"   => !isset($keep[$tag->invoke(null, $fpC, $pw)]),
+  "kept_count"    => count($keep),
+  "no_plaintext"  => !str_contains($raw, $fpA) && !str_contains($raw, $pw),
+  "cleared"       => !file_exists($file),
+]);
+');
+$dedupeOut = json_decode(trim(shell_exec('php ' . escapeshellarg($dedupeScript) . ' 2>&1') ?? ''), true);
+if (!is_array($dedupeOut)) {
+  err('dedupe subprocess ran', 'no JSON output');
+} else {
+  check('tag is deterministic',        $dedupeOut['deterministic'] === true);
+  check('tag differs per password',    $dedupeOut['pw_separated'] === true);
+  check('tag differs per fingerprint', $dedupeOut['fp_separated'] === true);
+  check_eq('tag is 64 chars',          $dedupeOut['taglen'], 64);
+  check('tag is lowercase hex',        $dedupeOut['taghex'] === true);
+  check_eq('4 records appended',       $dedupeOut['lines_before'], 4);
+  check_eq('sync collapses to 2',      $dedupeOut['lines_after'], 2);
+  check('sync keeps local file',       $dedupeOut['keeps_plain'] === true);
+  check('sync keeps S3 marker file',   $dedupeOut['keeps_s3'] === true);
+  check('sync drops deleted file',     $dedupeOut['drops_stale'] === true);
+  check_eq('sync returns 2 entries',   $dedupeOut['kept_count'], 2);
+  check('index stores no plaintext',   $dedupeOut['no_plaintext'] === true);
+  check('clear_dedupe removes index',  $dedupeOut['cleared'] === true);
+}
+@unlink($dedupeScript);
+foreach (glob("$dedupeDir/files/*") ?: [] as $f) @unlink($f);
+foreach (glob("$dedupeDir/{,.}*", GLOB_BRACE) ?: [] as $f) { if (is_file($f)) @unlink($f); }
+@rmdir("$dedupeDir/files");
+@rmdir($dedupeDir);
+
+// --- Emergency clears the dedupe index ---
+section('Emergency dedupe reset');
+$emergSrc = file_get_contents("$dir/components/emergency.class.php");
+check('re-encrypt clears dedupe index', str_contains($emergSrc, 'Upload::clear_dedupe()'));
+$upSrc = file_get_contents("$dir/components/upload.class.php");
+check('dedupe key is domain-separated', str_contains($upSrc, "'darkdrive-dedupe-v1'"));
+check('dedupe check requires POST',      str_contains($upSrc, "REQUEST_METHOD'] !== 'POST'"));
+check('dedupe check requires CSRF',      str_contains($upSrc, 'Base::csrf_verify()'));
+check('dedupe check requires enc key',   str_contains($upSrc, "\$password === ''"));
+check('dedupe caps hashes per request',  str_contains($upSrc, 'DEDUPE_MAX_HASHES'));
+check('dedupe validates hash format',    str_contains($upSrc, "preg_match('/^[0-9a-f]{64}\$/'"));
+check('dedupe read takes a lock',        str_contains($upSrc, 'flock($fh, LOCK_EX)') && str_contains($upSrc, 'dedupe_sync'));
 
 // --- Login / Auth ---
 section('Login / Auth');

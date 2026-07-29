@@ -1862,6 +1862,12 @@ a.login-button {
   color: var(--danger);
 }
 
+.share-notice {
+  font-size: var(--fs-base);
+  color: var(--danger);
+  margin-bottom: 1rem;
+}
+
 
 /* ─── Error overlay ──────────────────────────────────────────────────────── */
 

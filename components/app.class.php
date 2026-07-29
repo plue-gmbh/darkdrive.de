@@ -56,6 +56,7 @@ class App {
   private static function dispatch_early(): void {
     if (isset($_GET['sw'])) self::service_worker();
     if (isset($_GET['manifest'])) self::manifest();
+    if (isset($_GET['share'])) { http_response_code(303); Base::redirect('/?share_failed=nosw'); }
 
     $passwordFile = Base::data_path('.password');
     if (!file_exists($passwordFile)) self::handle_setup($passwordFile);
@@ -109,6 +110,7 @@ class App {
     Files::handle_gallery_page();
     Files::handle_render_tile();
     Upload::init(Base::data_path('files'), true);
+    Upload::handle_dedupe_check();
     Upload::handle();
     Base::handle_tags();
     Update::perform();
@@ -610,6 +612,8 @@ Copyright © <?= date('Y') ?> plue GmbH – https://plue.tech
     for ($i = 0; $i < count($parts); $i++) {
       $p = $parts[$i];
       if ($p === 'manifest.json') { $_GET['manifest'] = '1'; continue; }
+      if ($p === 'share') { $_GET['share'] = '1'; continue; }
+      if ($p === 'dedupe') { $_GET['dedupe'] = '1'; continue; }
       if (in_array($p, ['logout', 'login', 'setup', 'update', 'status', 'destroy_sessions', 'emergency', 'offline', 'sw'], true)) {
         $_GET[$p] = '1';
       } elseif ($p === 'load' && isset($parts[$i + 1])) {
@@ -647,10 +651,11 @@ Copyright © <?= date('Y') ?> plue GmbH – https://plue.tech
     header('Cache-Control: no-cache');
     ?>
 var CACHE='darkdrive-v<?= $swHash ?>';
+var SHARED='darkdrive-shared';
 var SHELL=['/components/app.css?v=<?= $cssV ?>','/components/app.offline.js?v=<?= $jsV ?>','/components/app.ttf','/favicon.ico?v=<?= $icoV ?>','/touchicon.png?v=<?= $iconV ?>','/offline'];
 self.addEventListener('install',function(e){e.waitUntil(caches.open(CACHE).then(function(c){return c.addAll(SHELL)}));self.skipWaiting()});
-self.addEventListener('activate',function(e){e.waitUntil(caches.keys().then(function(keys){return Promise.all(keys.filter(function(k){return k!==CACHE}).map(function(k){return caches.delete(k)}))}));self.clients.claim()});
-self.addEventListener('fetch',function(e){var req=e.request;if(req.method!=='GET')return;if(req.mode==='navigate'){e.respondWith(fetch(req).catch(function(){return caches.match('/offline')}));return}var path=new URL(req.url).pathname;var isShell=SHELL.some(function(s){return path===s||path.startsWith(s+'?')});if(isShell){e.respondWith(fetch(req).then(function(resp){var clone=resp.clone();caches.open(CACHE).then(function(c){c.put(req,clone)});return resp}).catch(function(){return caches.match(req,{ignoreSearch:true})}))}});
+self.addEventListener('activate',function(e){e.waitUntil(caches.keys().then(function(keys){return Promise.all(keys.filter(function(k){return k!==CACHE&&k!==SHARED}).map(function(k){return caches.delete(k)}))}));self.clients.claim()});
+self.addEventListener('fetch',function(e){var req=e.request;if(req.method==='POST'&&new URL(req.url).pathname==='/share'){e.respondWith(req.formData().then(function(fd){var files=fd.getAll('upload').filter(function(f){return f&&f.size});var tok=Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8);return caches.open(SHARED).then(function(c){return Promise.all(files.map(function(f,i){return c.put('/__shared/'+tok+'-'+i+'/'+encodeURIComponent(f.name),new Response(f,{headers:{'Content-Type':f.type||'application/octet-stream'}}))}))})}).then(function(){return Response.redirect('/?shared=1',303)}).catch(function(){return Response.redirect('/?share_failed=cache',303)}));return}if(req.method!=='GET')return;if(req.mode==='navigate'){e.respondWith(fetch(req).catch(function(){return caches.match('/offline')}));return}var path=new URL(req.url).pathname;var isShell=SHELL.some(function(s){return path===s||path.startsWith(s+'?')});if(isShell){e.respondWith(fetch(req).then(function(resp){var clone=resp.clone();caches.open(CACHE).then(function(c){c.put(req,clone)});return resp}).catch(function(){return caches.match(req,{ignoreSearch:true})}))}});
 <?php
     exit;
   }
@@ -673,6 +678,17 @@ self.addEventListener('fetch',function(e){var req=e.request;if(req.method!=='GET
         'type'    => 'image/png',
         'purpose' => 'maskable any',
       ]],
+      'share_target' => [
+        'action'  => '/share',
+        'method'  => 'POST',
+        'enctype' => 'multipart/form-data',
+        'params'  => [
+          'files' => [[
+            'name'   => 'upload',
+            'accept' => ['image/*', 'video/*', 'audio/*', 'application/pdf'],
+          ]],
+        ],
+      ],
     ], JSON_UNESCAPED_SLASHES);
     exit;
   }

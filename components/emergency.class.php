@@ -83,6 +83,7 @@ class Emergency {
     }
     Base::audit('emergency_password_change', count($allFiles) . ' files re-encrypted');
 
+    Upload::clear_dedupe();
     Base::clear_emergency_recovery();
     self::cleanup_tmp($filesDir);
 

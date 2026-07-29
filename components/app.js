@@ -717,6 +717,16 @@ document.addEventListener('DOMContentLoaded', function () {
 
   function escHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
+  const SHARE_CACHE = 'darkdrive-shared';
+  const MAX_QUEUE   = 100;
+
+  function sharedCache() {
+    if (!window.caches) return Promise.resolve(null);
+    return caches.has(SHARE_CACHE).then(function (exists) {
+      return exists ? caches.open(SHARE_CACHE) : null;
+    }).catch(function () { return null; });
+  }
+
   const input = document.getElementById('uploads');
   if (!input) return;
 
@@ -784,16 +794,110 @@ document.addEventListener('DOMContentLoaded', function () {
     }
   });
 
-  input.addEventListener('change', function (e) {
-    const files   = [...e.target.files];
+  const FP_EDGE  = 1048576;
+  const FP_FULL  = 33554432;
+  const FP_LANES = 4;
+
+  function mapLimit(items, limit, fn) {
+    const out = new Array(items.length);
+    let next = 0;
+    function lane() {
+      if (next >= items.length) return Promise.resolve();
+      const i = next++;
+      return fn(items[i], i).then(function (v) { out[i] = v; return lane(); });
+    }
+    const lanes = [];
+    for (let i = 0; i < Math.min(limit, items.length); i++) lanes.push(lane());
+    return Promise.all(lanes).then(function () { return out; });
+  }
+
+  function dropShared(file) {
+    if (!file.darkdriveCacheKey) return;
+    sharedCache().then(function (cache) { if (cache) cache.delete(file.darkdriveCacheKey); });
+  }
+
+  function fingerprint(file) {
+    if (!window.crypto || !crypto.subtle) return Promise.resolve('');
+    let parts;
+    if (file.size <= FP_FULL) {
+      parts = [file];
+    } else {
+      parts = [file.slice(0, FP_EDGE)];
+      for (let i = 1; i <= 3; i++) {
+        const mid = Math.floor(file.size * i / 4);
+        parts.push(file.slice(mid, mid + FP_EDGE));
+      }
+      parts.push(file.slice(file.size - FP_EDGE));
+    }
+    return new Blob(['2:' + file.size + ':' + file.name.length + ':'].concat(parts)).arrayBuffer()
+      .then(function (buf) { return crypto.subtle.digest('SHA-256', buf); })
+      .then(function (hash) {
+        return [...new Uint8Array(hash)].map(function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+      })
+      .catch(function () { return ''; });
+  }
+
+  function filterKnown(files) {
+    const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+    if (!csrfMeta) return Promise.resolve(files);
+    return mapLimit(files, FP_LANES, fingerprint).then(function (prints) {
+      const hashes = prints.filter(Boolean);
+      if (hashes.length === 0) return files;
+      const fd = new FormData();
+      fd.append('csrf_token', csrfMeta.content);
+      hashes.forEach(function (h) { fd.append('hashes[]', h); });
+      return fetch('/dedupe', { method: 'POST', body: fd }).then(function (r) { return r.json(); }).then(function (data) {
+        const known = new Set(data.known || []);
+        return files.filter(function (f, i) {
+          if (!prints[i] || !known.has(prints[i])) { f.darkdriveFingerprint = prints[i]; return true; }
+          dropShared(f);
+          return false;
+        });
+      }).catch(function () { return files; });
+    });
+  }
+
+  let activeFiles  = null;
+  let queueSkipped = 0;
+  let queueExcess  = 0;
+
+  function summary(skipped, excess) {
+    const parts = [];
+    if (skipped > 0) parts.push(skipped + ' already stored');
+    if (excess  > 0) parts.push(excess + ' not queued (max ' + MAX_QUEUE + ')');
+    return parts.join(' · ');
+  }
+
+  function flushSummary() {
+    const status = document.getElementById('status');
+    const msg = summary(queueSkipped, queueExcess);
+    queueSkipped = 0;
+    queueExcess  = 0;
+    if (uploadErrors.length > 0) { showErrorBadge(status); return; }
+    status.textContent = msg;
+    setTimeout(function () { status.innerHTML = ''; }, 2500);
+  }
+
+  function startUploads(fileList) {
+    const all = [...fileList];
+    if (all.length === 0) return;
+    const batch  = all.slice(0, MAX_QUEUE);
+    const excess = all.length - batch.length;
+    if (!activeFiles) document.getElementById('status').textContent = 'Checking …';
+    filterKnown(batch).then(function (files) {
+      runQueue(files, batch.length - files.length, excess);
+    });
+  }
+
+  function runQueue(files, skipped, excess) {
+    queueSkipped += skipped;
+    queueExcess  += excess;
+    if (activeFiles) { activeFiles.push.apply(activeFiles, files); return; }
+    if (files.length === 0) { flushSummary(); return; }
+    activeFiles = files;
+
     const status  = document.getElementById('status');
     const section = document.querySelector('main section');
-
-    if (files.length > 100) {
-      status.innerHTML = '<span style="color:var(--danger)">Max 100 files per queue.</span>';
-      input.value = '';
-      return;
-    }
 
     let wakeLock = null;
     (async function() {
@@ -805,22 +909,21 @@ document.addEventListener('DOMContentLoaded', function () {
         status.classList.remove('uploading');
         if (wakeLock) { try { wakeLock.release(); } catch(e) {} wakeLock = null; }
         document.removeEventListener('visibilitychange', reacquireWakeLock);
-        if (uploadErrors.length > 0) {
-          showErrorBadge(status);
-        } else {
-          setTimeout(() => { status.innerHTML = ''; }, 2500);
-        }
+        activeFiles = null;
+        flushSummary();
         return;
       }
 
       const file = files.shift();
       if (uploadMax > 0 && file.size > uploadMax) {
         uploadErrors.push(file.name);
+        dropShared(file);
         setTimeout(uploadNext, 0);
         return;
       }
       const fd   = new FormData();
       fd.append('upload', file);
+      if (file.darkdriveFingerprint) fd.append('fingerprint', file.darkdriveFingerprint);
       const csrfMeta = document.querySelector('meta[name="csrf-token"]');
       if (csrfMeta) fd.append('csrf_token', csrfMeta.content);
 
@@ -879,6 +982,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const bar = response.indexOf('|');
         const filename = bar >= 0 ? response.slice(0, bar) : response;
         if (filename && filename !== 'false' && !response.startsWith('{"error"')) {
+          dropShared(file);
           var tileUrl = new URL(location.href);
           tileUrl.search = '';
           tileUrl.searchParams.set('render_tile', filename);
@@ -910,8 +1014,10 @@ document.addEventListener('DOMContentLoaded', function () {
             });
         } else {
           var errMsg = file.name;
-          try { var j = JSON.parse(response); if (j.detail) errMsg += ' — ' + j.detail; } catch(e) {}
+          var reason = '';
+          try { var j = JSON.parse(response); reason = j.error || ''; if (j.detail) errMsg += ' — ' + j.detail; } catch(e) {}
           uploadErrors.push(errMsg);
+          if (reason !== 'rate_limited' && reason !== 'storage_full') dropShared(file);
           progressEl.remove();
           setTimeout(uploadNext, 200);
         }
@@ -934,7 +1040,37 @@ document.addEventListener('DOMContentLoaded', function () {
     document.addEventListener('visibilitychange', reacquireWakeLock);
 
     uploadNext();
+  }
+
+  input.addEventListener('change', function (e) {
+    const picked = [...e.target.files];
+    input.value = '';
+    startUploads(picked);
   });
+
+  sharedCache().then(function (cache) {
+    if (!cache) return;
+    return cache.keys().then(function (keys) {
+      if (keys.length === 0) return;
+      const take = keys.slice(0, MAX_QUEUE);
+      return mapLimit(take, FP_LANES, function (req) {
+        return cache.match(req).then(function (resp) {
+          if (!resp) return null;
+          const name = decodeURIComponent(new URL(req.url).pathname.split('/').pop());
+          return resp.blob().then(function (blob) {
+            const file = new File([blob], name, { type: blob.type });
+            file.darkdriveCacheKey = req.url;
+            return file;
+          });
+        }).catch(function () { return null; });
+      }).then(function (files) {
+        const ready = files.filter(Boolean);
+        if (ready.length === 0) return;
+        queueExcess += keys.length - take.length;
+        startUploads(ready);
+      });
+    });
+  }).catch(function () {});
 });
 
 (function () {

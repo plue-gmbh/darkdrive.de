@@ -23,6 +23,8 @@ A lean, security-first alternative to heavyweight self-hosted clouds. Store your
 - **Tags** — organize files with encrypted tag directories
 - **In-browser text editing** — edit files without downloading them
 - **S3-compatible storage** — offload encrypted blobs to Hetzner, AWS S3, and others; keys never leave your server
+- **Share to upload** — installed as a PWA on Chromium/Android, Darkdrive appears in your phone's share sheet
+- **Duplicate detection** — re-sharing an album skips what is already stored, without re-uploading it
 - **Two-way sync** — the Darksync client keeps a local folder in step
 - **Signed auto-updates** — minisign / Ed25519 verified before every install
 - **Zero build, zero dependencies** — single-entry PHP 8.1+ app; upload and go
@@ -44,6 +46,7 @@ Always run Darkdrive behind HTTPS — your password travels to the server at log
 - Tags: AES-256-GCM encrypted directory names
 - Thumbnails: generated from decrypted data, stored encrypted
 - Password storage: `SPLITKEY:` bcrypt of the derived auth key
+- Duplicate index: content fingerprints stored as HMAC-SHA256 under a key derived from your encryption key, so the index reveals nothing about what you store
 
 ---
 
