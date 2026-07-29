@@ -271,8 +271,61 @@ check('no-SW fallback flags failure',    str_contains($appSrc, 'share_failed=nos
 check('SW intercepts POST /share',       str_contains($swMethod, "req.method==='POST'") && str_contains($swMethod, "==='/share'"));
 check('SW caches share to SHARED',       str_contains($swMethod, "SHARED='darkdrive-shared'"));
 check('SW share keys are unique',        str_contains($swMethod, 'Math.random()'));
-check('SW cache failure flags failure',  str_contains($swMethod, 'share_failed=cache'));
+check('SW cache failure flags failure',  str_contains($swMethod, 'share_failed='));
 check('activate keeps shared cache',     str_contains($swMethod, 'k!==CACHE&&k!==SHARED'));
+
+// --- A shared batch is bounded by device storage, not by file count ---
+// Writing every file at once held one Response per file open and lost the whole
+// batch on the first rejection, so one oversized share wiped out the rest.
+// Saving one at a time bounds the peak and keeps whatever already fit.
+check('share writes one file at a time', str_contains($swMethod, 'return step(i+1)') && !str_contains($swMethod, 'Promise.all(files.map'));
+check('partial saves are kept',          str_contains($swMethod, 'saved:saved,total:files.length'));
+check('failure reports the real cause',  str_contains($swMethod, '(err&&err.name)'));
+check('failure reports how many landed', str_contains($swMethod, "'&saved='+r.saved+'&of='+r.total"));
+check('success reports how many landed', str_contains($swMethod, "'/?shared='+r.saved"));
+
+// The SW is emitted from PHP, so nothing else parses or runs it. Drive the real
+// emitted source against a stub Cache that throws partway, which is what a phone
+// does when a shared batch outgrows the origin quota.
+if ($hasNode) {
+  $swJs = preg_replace('/<\?=.*?\?>/', 'X', $swMethod);
+  $swJs = substr($swJs, (int)strpos($swJs, '?>') + 2);
+  $swJs = substr($swJs, 0, (int)strpos($swJs, '<?php'));
+  $swJsFile = sys_get_temp_dir() . '/dd_sw_' . getmypid() . '.js';
+  $swRunner = sys_get_temp_dir() . '/dd_swrun_' . getmypid() . '.js';
+  file_put_contents($swJsFile, $swJs);
+  file_put_contents($swRunner, 'const fs=require("fs"),vm=require("vm");
+const js=fs.readFileSync(' . var_export($swJsFile, true) . ',"utf8");
+function env(failAt){const store=new Map();const ctx={self:{addEventListener(){}},console,
+Response:class{constructor(b){this.body=b}static redirect(u,s){return{url:u,status:s}}},
+caches:{open:async()=>({put:async(k,r)=>{if(store.size===failAt){const e=new Error("q");e.name="QuotaExceededError";throw e}store.set(k,r)}})},
+URL,Date,Math,Promise,encodeURIComponent};
+vm.createContext(ctx);vm.runInContext(js,ctx);return{ctx,store}}
+const files=[];for(let i=0;i<5;i++)files.push({name:"p"+i+".jpg",size:1000,type:"image/jpeg"});
+(async()=>{const a=env(-1),ra=await a.ctx.shareSave(files),reda=a.ctx.shareResult(ra);
+const b=env(2),rb=await b.ctx.shareSave(files),redb=b.ctx.shareResult(rb);
+const c=env(0),rc=await c.ctx.shareSave(files);
+console.log(JSON.stringify({all_saved:ra.saved===5&&ra.err==="",all_cached:a.store.size===5,
+ok_url:reda.url==="/?shared=5"&&reda.status===303,part_saved:rb.saved===2&&rb.total===5,
+part_kept:b.store.size===2,part_name:rb.err==="QuotaExceededError",
+part_url:redb.url==="/?share_failed=QuotaExceededError&saved=2&of=5"&&redb.status===303,
+none_kept:rc.saved===0&&c.store.size===0,none_named:rc.err==="QuotaExceededError"}))})()');
+  $swOut = json_decode(trim(shell_exec('node ' . escapeshellarg($swRunner) . ' 2>&1') ?? ''), true);
+  @unlink($swJsFile); @unlink($swRunner);
+  if (!is_array($swOut)) {
+    err('SW share handler runs', 'no JSON output');
+  } else {
+    check('emitted SW parses and runs',   $swOut['all_saved'] === true);
+    check('every file reaches the cache', $swOut['all_cached'] === true);
+    check('success redirect is exact',    $swOut['ok_url'] === true);
+    check('quota stop is counted',        $swOut['part_saved'] === true);
+    check('files saved before it are kept',$swOut['part_kept'] === true);
+    check('quota error name survives',    $swOut['part_name'] === true);
+    check('failure redirect is exact',    $swOut['part_url'] === true);
+    check('failing on the first keeps none', $swOut['none_kept'] === true);
+    check('first-file failure still named', $swOut['none_named'] === true);
+  }
+}
 check('drain not gated on shared=1',    !str_contains($jsSrc, "indexOf('shared=1')"));
 check('shared files kept until stored',  str_contains($jsSrc, 'darkdriveCacheKey') && str_contains($jsSrc, 'dropShared'));
 check('queue cap restored',              str_contains($jsSrc, 'MAX_QUEUE   = 100'));
@@ -304,6 +357,13 @@ check('auto-reconnects via offline-retry', str_contains($offJsSrc, 'offline-retr
 check('logged-out share is announced',   str_contains($offJsSrc, 'log in to upload'));
 check('logged-in share fallback notice', str_contains($offJsSrc, 'open All Files to upload'));
 check('share_failed notice on any page', str_contains($offJsSrc, 'share_failed'));
+// A generic "please share them again" hid the real limit, which is total bytes
+// on the device rather than the number of files — so it told the user to retry
+// the exact thing that cannot work.
+check('quota failure named for the user',   str_contains($offJsSrc, 'QuotaExceededError'));
+check('partial share tells you to split',   str_contains($offJsSrc, 'smaller batches'));
+check('total share failure suggests fewer', str_contains($offJsSrc, 'fewer at a time'));
+check('partial share reports the count',    str_contains($offJsSrc, "saved + ' of ' + total"));
 
 // ── 2. Unit tests ─────────────────────────────────────────────────────────────
 

@@ -5,7 +5,9 @@
 //   Service worker:    registers /sw for PWA offline caching
 //   Reconnect:         auto-reloads the offline page when connection returns
 //   Share notices:     share_failed messages and pending shared-file count on
-//                      pages without the upload input (login page, detail view)
+//                      pages without the upload input (login page, detail view).
+//                      A share that outgrew device storage reports how many of
+//                      the batch survived, since those still upload normally.
 //
 (function () {
   var el = document.getElementById('offline-notice');
@@ -39,7 +41,17 @@
   if (shareFailed === 'nosw') {
     shareNotice('Sharing needs the installed app — nothing was uploaded.');
   } else if (shareFailed !== null) {
-    shareNotice('Some shared files could not be saved — please share them again.');
+    var saved = parseInt(shareParams.get('saved'), 10) || 0;
+    var total = parseInt(shareParams.get('of'), 10) || 0;
+    var why = shareFailed === 'QuotaExceededError'
+      ? 'this device ran out of space for them'
+      : 'this device could not store them (' + shareFailed + ')';
+    if (saved > 0 && total > saved) {
+      shareNotice(saved + ' of ' + total + ' shared files were saved — ' + why +
+        '. Upload these, then share the rest in smaller batches.');
+    } else {
+      shareNotice('Shared files could not be saved — ' + why + '. Try sharing fewer at a time.');
+    }
   }
 
   if (!document.getElementById('uploads') && window.caches) {
