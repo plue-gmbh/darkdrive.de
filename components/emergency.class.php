@@ -11,6 +11,8 @@
 
 class Emergency {
 
+  private static bool $recoveryNeeded = false;
+
   private static function cleanup_tmp(string $dir): void {
     if (!is_dir($dir)) return;
     foreach (scandir($dir) as $f) {
@@ -65,10 +67,14 @@ class Emergency {
     }
     $allFiles = array_merge($localFiles, $s3Files);
 
-    Base::save_emergency_recovery($input['new_password']);
-
     self::verify_files($filesDir, $localFiles, $input['old_password']);
     self::verify_s3_files($s3Files, $input['old_password']);
+
+    Base::save_emergency_recovery($input['new_password']);
+    register_shutdown_function(function() {
+      if (!self::$recoveryNeeded) Base::clear_emergency_recovery();
+    });
+
     self::reencrypt_files($filesDir, $localFiles, $input['old_password'], $input['new_password']);
     self::reencrypt_s3_files($s3Files, $input['old_password'], $input['new_password']);
     self::purge_thumbs($thumbsDir);
@@ -155,6 +161,10 @@ class Emergency {
       self::fail('New password cannot be empty.');
     }
 
+    if (!Base::auth_key_matches($newAuthKey, $newPassword)) {
+      self::fail('New key does not match the new password. Nothing was changed.');
+    }
+
     return ['old_password' => $oldPassword, 'new_password' => $newPassword, 'new_auth_key' => $newAuthKey];
   }
 
@@ -192,6 +202,7 @@ class Emergency {
         @unlink($tmpEnc);
         self::fail("Rename failed: {$f}");
       }
+      self::$recoveryNeeded = true;
     }
   }
 
@@ -260,6 +271,7 @@ class Emergency {
         @unlink($tmpNew);
         self::fail("S3 upload failed: {$f}");
       }
+      self::$recoveryNeeded = true;
 
       $newSize = (int)filesize($tmpNew);
       $hdr = file_get_contents($tmpNew, false, null, 0, 39);

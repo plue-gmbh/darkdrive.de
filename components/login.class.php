@@ -42,14 +42,18 @@ class Login {
       if (self::is_splitkey()) {
         $storedHash = substr(self::$instance->hash, 9);
         $verified = password_verify($authKey, $storedHash);
+        $suppliedPw = $_POST['password'] ?? '';
+        if ($verified && $suppliedPw !== '' && !Base::auth_key_matches($authKey, $suppliedPw)) $verified = false;
       } else {
         $rawPassword = $_POST['password'] ?? '';
         if ($rawPassword !== '' && password_verify($rawPassword, self::$instance->hash)) {
           $verified = true;
-          $passwordFile = Base::data_path('.password');
-          $newHash = 'SPLITKEY:' . password_hash($authKey, PASSWORD_DEFAULT);
-          file_put_contents($passwordFile, $newHash, LOCK_EX);
-          self::$instance->hash = $newHash;
+          if (Base::auth_key_matches($authKey, $rawPassword)) {
+            $passwordFile = Base::data_path('.password');
+            $newHash = 'SPLITKEY:' . password_hash($authKey, PASSWORD_DEFAULT);
+            file_put_contents($passwordFile, $newHash, LOCK_EX);
+            self::$instance->hash = $newHash;
+          }
         }
       }
 

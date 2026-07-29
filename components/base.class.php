@@ -668,6 +668,20 @@ class Base {
     @file_put_contents($log, $entry . "\n", FILE_APPEND | LOCK_EX);
   }
 
+  public static function auth_key_matches(string $authKey, string $password): bool {
+    if ($password === '' || !preg_match('/^[0-9a-f]{64}$/', $authKey)) return false;
+    $expected = hash_pbkdf2('sha256', $password, 'darkdrive-auth-v1', 100_000, 32, true);
+    $supplied = (string)hex2bin($authKey);
+    $ok = hash_equals($expected, $supplied);
+    self::memzero($expected);
+    self::memzero($supplied);
+    return $ok;
+  }
+
+  public static function has_emergency_recovery(): bool {
+    return is_file(self::data_path('.emergency_recovery'));
+  }
+
   public static function derive_auth_key_js(): void {
     ?>
     <script src="/components/app.login.js?v=<?= filemtime(__DIR__ . '/app.login.js') ?>"></script>

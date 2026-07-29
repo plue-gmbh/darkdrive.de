@@ -717,7 +717,8 @@ self.addEventListener('fetch',function(e){var req=e.request;if(req.method==='POS
   private static function handle_setup(string $passwordFile): void {
     $dataEmpty = !is_dir(Base::data_path('files'));
     if (!$dataEmpty) exit('Password file missing. Cannot regenerate — existing encrypted files would be lost.');
-    if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['auth_key']) && strlen($_POST['auth_key']) <= 512 && Base::csrf_verify()) {
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['auth_key']) && strlen($_POST['auth_key']) <= 512 && Base::csrf_verify()
+        && Base::auth_key_matches($_POST['auth_key'], (string)($_POST['password'] ?? ''))) {
       file_put_contents(Base::data_path('.htaccess'), "Deny from all\n");
       file_put_contents($passwordFile, 'SPLITKEY:' . password_hash($_POST['auth_key'], PASSWORD_DEFAULT));
       $_SESSION = [];

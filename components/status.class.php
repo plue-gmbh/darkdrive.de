@@ -195,6 +195,11 @@ class Status {
       $checks[] = self::chk('Emergency mode OFF', false, 'DARKDRIVE_EMERGENCY_PASSWORD is active!');
     }
 
+    $recoveryLeft = Base::has_emergency_recovery();
+    if ($recoveryLeft) {
+      $checks[] = self::chk('No recovery key at rest', false, 'an interrupted password change left data/.emergency_recovery — re-run it to completion');
+    }
+
     $pubDir = 'public';
     $pubCount = 0;
     if (is_dir($pubDir)) {
@@ -216,6 +221,7 @@ class Status {
     if (!$isSplitKey) $issues[] = 'Legacy password format';
     if (!$hasEncCookie) $issues[] = 'Enc-Key cookie missing';
     if ($emergencyMode) $issues[] = 'Emergency mode is active!';
+    if ($recoveryLeft) $issues[] = 'Interrupted password change left a recovery key';
     if (!$sessionOk) $issues[] = 'Session cookie flags insecure';
     if ($issues) {
       $summary = $issues[0];
