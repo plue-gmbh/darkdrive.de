@@ -312,6 +312,7 @@ require "$dir/components/base.class.php";
 require "$dir/components/crypto.class.php";
 require "$dir/components/s3.class.php";
 require "$dir/components/files.class.php";
+require "$dir/components/fileserver.class.php";
 require "$dir/components/login.class.php";
 require "$dir/components/upload.class.php";
 require "$dir/components/emergency.class.php";
@@ -636,6 +637,21 @@ check('quota reserved after filename encrypt',  $posQuota > $posEncNam);
 check('quota reserved before encryption',       $posQuota < $posStream);
 check('encrypt failure refunds quota',          str_contains($upSrc, 'self::update_storage_bytes(-$_FILES'));
 check('s3 encrypt failure refunds quota',       str_contains($upSrc, 'S3::update_s3_storage_bytes(-$_FILES'));
+
+// --- Published files bypass PHP, so public/ is hardened via .htaccess ---
+// Opaque origin (no allow-same-origin) is what stops a shared HTML file from
+// riding the owner's session; allow-downloads keeps share links usable.
+section('Public share hardening');
+$fsSrcPub = file_get_contents("$dir/components/fileserver.class.php");
+$pubHt = FileServer::PUBLIC_HTACCESS;
+check('public .htaccess sets CSP sandbox',   str_contains($pubHt, 'Content-Security-Policy "sandbox'));
+check('sandbox keeps scripts usable',        str_contains($pubHt, 'allow-scripts'));
+check('sandbox keeps downloads usable',      str_contains($pubHt, 'allow-downloads'));
+check('sandbox withholds same-origin',       !str_contains($pubHt, 'allow-same-origin'));
+check('public .htaccess sets nosniff',       str_contains($pubHt, 'X-Content-Type-Options "nosniff"'));
+check('public .htaccess keeps -Indexes',     str_contains($pubHt, 'Options -Indexes'));
+check('header directives guarded by module', str_contains($pubHt, '<IfModule mod_headers.c>'));
+check('stale public .htaccess is rewritten', str_contains($fsSrcPub, "file_get_contents(\$htaccess) !== self::PUBLIC_HTACCESS"));
 
 // --- Login / Auth ---
 section('Login / Auth');

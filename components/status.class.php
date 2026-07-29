@@ -208,7 +208,9 @@ class Status {
       }
     }
     if ($pubCount > 0) {
-      $checks[] = self::chk('Public shared files', true, $pubCount . ' file' . ($pubCount > 1 ? 's' : '') . ' shared');
+      $shareLabel = $pubCount . ' file' . ($pubCount > 1 ? 's' : '') . ' shared';
+      $checks[] = self::chk('Public shared files', $isApache ? true : 'warn',
+        $isApache ? $shareLabel : $shareLabel . ' — public/.htaccess is ignored here, add a CSP sandbox header for /public/');
     }
 
     $issues = [];

@@ -11,9 +11,18 @@
 //
 //   All derived keys and plaintext are zeroed before exit.
 //   Redirect targets are validated to prevent open-redirect.
+//   Published copies live in public/ and bypass PHP, so publishing (re)writes a
+//   public/.htaccess that sandboxes them into an opaque origin — shared HTML and
+//   SVG still render and download, but cannot reach the session or the API.
 //
 
 class FileServer {
+
+  const PUBLIC_HTACCESS = "Options -Indexes\n\n"
+    . "<IfModule mod_headers.c>\n"
+    . "  Header always set Content-Security-Policy \"sandbox allow-scripts allow-downloads\"\n"
+    . "  Header always set X-Content-Type-Options \"nosniff\"\n"
+    . "</IfModule>\n";
 
   public static function handle(): void {
     if (!isset($_GET['loadfile'])) return;
@@ -412,7 +421,9 @@ class FileServer {
     $pubDir  = dirname($pubPath);
     if (!is_dir($pubDir)) mkdir($pubDir, 0755, true);
     $htaccess = 'public/.htaccess';
-    if (!file_exists($htaccess)) file_put_contents($htaccess, "Options -Indexes\n");
+    if (!is_file($htaccess) || file_get_contents($htaccess) !== self::PUBLIC_HTACCESS) {
+      file_put_contents($htaccess, self::PUBLIC_HTACCESS, LOCK_EX);
+    }
 
     if ($isS3) {
       if (!S3::is_configured()) { Base::memzero($password); return; }
