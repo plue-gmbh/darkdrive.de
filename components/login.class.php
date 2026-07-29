@@ -4,6 +4,8 @@
 // Login — authentication and brute-force protection for Darkdrive
 //
 //   Password:  split-key (PBKDF2 auth_key) or legacy bcrypt, auto-migration
+//   Binding:   split-key logins require the password too — a stolen auth_key
+//              alone must not open a session, only the pair is accepted
 //   Lockout:   session-based + IP-based rate limiting (5 attempts / 5 min)
 //   Session:   regenerate ID on login, track active sessions, destroy others
 //   Setup:     initial password creation via Web Crypto PBKDF2 in browser
@@ -41,9 +43,10 @@ class Login {
 
       if (self::is_splitkey()) {
         $storedHash = substr(self::$instance->hash, 9);
-        $verified = password_verify($authKey, $storedHash);
         $suppliedPw = $_POST['password'] ?? '';
-        if ($verified && $suppliedPw !== '' && !Base::auth_key_matches($authKey, $suppliedPw)) $verified = false;
+        $verified = $suppliedPw !== ''
+          && password_verify($authKey, $storedHash)
+          && Base::auth_key_matches($authKey, $suppliedPw);
       } else {
         $rawPassword = $_POST['password'] ?? '';
         if ($rawPassword !== '' && password_verify($rawPassword, self::$instance->hash)) {

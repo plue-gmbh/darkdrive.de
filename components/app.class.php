@@ -49,6 +49,7 @@ class App {
     if (!is_dir($dataDir) && !mkdir($dataDir, 0755, true)) exit('Could not create data directory. Check file permissions.');
     if (!file_exists(Base::data_path('index.php'))) @file_put_contents(Base::data_path('index.php'), "<?php http_response_code(403); exit;\n");
     Base::protect_data_dir();
+    FileServer::protect_public_dir();
     if (!Base::session_works()) exit;
     Base::security_headers();
     self::parse_route();

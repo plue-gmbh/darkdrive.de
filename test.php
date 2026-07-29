@@ -712,6 +712,12 @@ check('public .htaccess sets nosniff',       str_contains($pubHt, 'X-Content-Typ
 check('public .htaccess keeps -Indexes',     str_contains($pubHt, 'Options -Indexes'));
 check('header directives guarded by module', str_contains($pubHt, '<IfModule mod_headers.c>'));
 check('stale public .htaccess is rewritten', str_contains($fsSrcPub, "file_get_contents(\$htaccess) !== self::PUBLIC_HTACCESS"));
+// Instances that shared files before this rule existed must not have to
+// republish to get the sandbox, so the guard runs on boot, not only on publish.
+$appSrcPub = file_get_contents("$dir/components/app.class.php");
+check('public guard runs on boot',           str_contains($appSrcPub, 'FileServer::protect_public_dir();'));
+check('publish reuses the same guard',       str_contains($fsSrcPub, 'self::protect_public_dir();'));
+check('guard skips a missing public dir',    str_contains($fsSrcPub, "if (!is_dir('public')) return;"));
 
 // --- Chunk AAD binds size, so truncation cannot pass as a complete file ---
 // V1/V2 fixtures are built by hand here (not by the current encryptor) so this
@@ -854,6 +860,28 @@ $legacyTag = '';
 $legacyCt = openssl_encrypt('legacy-file.pdf', 'aes-256-gcm', $legacyKey, OPENSSL_RAW_DATA, $legacyNonce, $legacyTag, '', 16);
 $legacyEnc = rtrim(strtr(base64_encode($legacyNonce . $legacyTag . $legacyCt), '+/', '-_'), '=');
 check_eq('legacy 10k filename decrypts', Crypto::decrypt_filename($legacyEnc, $pw), 'legacy-file.pdf');
+
+// --- A stolen auth_key must not open a session on its own ---
+// The auth_key is the half an attacker can realistically get: it is what
+// cracking .password yields, and it crosses the wire on every login. So a
+// split-key login is only accepted when the key and the password it derives
+// from are presented together — the key alone buys nothing, not even a
+// session without decryption, since a bare session can still delete files.
+section('Auth key / password binding');
+$bindPw  = 'correct horse battery staple';
+$bindKey = bin2hex(hash_pbkdf2('sha256', $bindPw, 'darkdrive-auth-v1', 100_000, 32, true));
+check('matching key and password accepted', Base::auth_key_matches($bindKey, $bindPw));
+check('key rejected with wrong password',   !Base::auth_key_matches($bindKey, 'wrong password'));
+check('key rejected with empty password',   !Base::auth_key_matches($bindKey, ''));
+check('non-hex key rejected',               !Base::auth_key_matches(str_repeat('z', 64), $bindPw));
+check('short key rejected',                 !Base::auth_key_matches(substr($bindKey, 0, 32), $bindPw));
+$loginSrcB = file_get_contents("$dir/components/login.class.php");
+check('splitkey login demands a password',  str_contains($loginSrcB, "\$verified = \$suppliedPw !== ''"));
+check('splitkey login demands the pair',    str_contains($loginSrcB, 'Base::auth_key_matches($authKey, $suppliedPw)'));
+check('legacy migration demands the pair',  str_contains($loginSrcB, 'Base::auth_key_matches($authKey, $rawPassword)'));
+// Both shipped clients already send the pair, so requiring it breaks neither.
+check('browser login sends the password',   str_contains($authJsSrc, "[name=password]').value = pw"));
+check('darksync sends the password',        str_contains((string)file_get_contents("$dir/darksync.py"), '"password":   password,'));
 
 // --- Login lockout ---
 section('Login lockout');
