@@ -713,6 +713,77 @@ check('public .htaccess keeps -Indexes',     str_contains($pubHt, 'Options -Inde
 check('header directives guarded by module', str_contains($pubHt, '<IfModule mod_headers.c>'));
 check('stale public .htaccess is rewritten', str_contains($fsSrcPub, "file_get_contents(\$htaccess) !== self::PUBLIC_HTACCESS"));
 
+// --- Chunk AAD binds size, so truncation cannot pass as a complete file ---
+// V1/V2 fixtures are built by hand here (not by the current encryptor) so this
+// keeps proving old files still open even after the writer moves on.
+section('Chunked format integrity');
+$fmtDir = sys_get_temp_dir() . '/dd_fmt_' . getmypid();
+@mkdir($fmtDir, 0700, true);
+$fmtPlain = $fmtDir . '/plain.bin';
+$fmtBody  = random_bytes(300000);
+file_put_contents($fmtPlain, $fmtBody);
+$fmtPw = 'fmt-pw';
+
+$writeLegacy = function (string $magic, string $dst, string $body, string $pw, bool $useAad): void {
+  $salt = random_bytes(16);
+  $key  = hash_pbkdf2('sha256', $pw, $salt, 100000, 32, true);
+  $cs   = Crypto::CHUNK_SIZE;
+  $out  = $magic . $salt . pack('N', $cs) . pack('J', strlen($body));
+  $idx  = 0;
+  foreach (str_split($body, $cs) as $part) {
+    $nonce = random_bytes(12); $tag = '';
+    $aad = $useAad ? pack('J', $idx) : '';
+    $ct = openssl_encrypt($part, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $nonce, $tag, $aad, 16);
+    $out .= pack('N', strlen($ct)) . $nonce . $tag . $ct;
+    $idx++;
+  }
+  file_put_contents($dst, $out);
+};
+$writeLegacy(Crypto::MAGIC_V1, "$fmtDir/v1.enc", $fmtBody, $fmtPw, false);
+$writeLegacy(Crypto::MAGIC_V2, "$fmtDir/v2.enc", $fmtBody, $fmtPw, true);
+Crypto::encrypt_stream($fmtPlain, "$fmtDir/v3.enc", $fmtPw);
+
+check('V1 files still decrypt',  Crypto::decrypt_chunked_to_string("$fmtDir/v1.enc", $fmtPw) === $fmtBody);
+check('V2 files still decrypt',  Crypto::decrypt_chunked_to_string("$fmtDir/v2.enc", $fmtPw) === $fmtBody);
+check('V3 round-trips',          Crypto::decrypt_chunked_to_string("$fmtDir/v3.enc", $fmtPw) === $fmtBody);
+check('encrypt_stream writes V3', str_starts_with((string)file_get_contents("$fmtDir/v3.enc"), Crypto::MAGIC_V3));
+check('V3 header layout matches V2',
+  unpack('J', substr((string)file_get_contents("$fmtDir/v3.enc"), 31, 8))[1] === strlen($fmtBody));
+check('wrong password still rejected', Crypto::decrypt_chunked_to_string("$fmtDir/v3.enc", 'nope') === false);
+
+$v3raw = (string)file_get_contents("$fmtDir/v3.enc");
+$cut   = 39 + 4 + 12 + 16 + unpack('N', substr($v3raw, 39, 4))[1];
+file_put_contents("$fmtDir/short.enc", substr($v3raw, 0, $cut - 1));
+check('truncated V3 mid-chunk rejected', Crypto::decrypt_chunked_to_string("$fmtDir/short.enc", $fmtPw) === false);
+$sizeLie = substr_replace($v3raw, pack('J', strlen($fmtBody) + 4096), 31, 8);
+file_put_contents("$fmtDir/lie.enc", $sizeLie);
+check('V3 header size is authenticated', Crypto::decrypt_chunked_to_string("$fmtDir/lie.enc", $fmtPw) === false);
+$other = random_bytes(120000);
+file_put_contents("$fmtDir/other.bin", $other);
+Crypto::encrypt_stream("$fmtDir/other.bin", "$fmtDir/other.enc", $fmtPw);
+$swap = substr($v3raw, 0, 39) . substr((string)file_get_contents("$fmtDir/other.enc"), 39);
+file_put_contents("$fmtDir/swap.enc", $swap);
+check('V3 rejects a swapped body', Crypto::decrypt_chunked_to_string("$fmtDir/swap.enc", $fmtPw) === false);
+check('s3 range needs explicit plain_size',
+  (new ReflectionMethod('Crypto', 'decrypt_s3_range_output'))->getNumberOfRequiredParameters() === 8);
+// The AAD (not the length check) is what binds an untrusted S3 blob to the
+// trusted local marker: a blob whose size disagrees with the marker fails to
+// authenticate, rather than streaming the wrong file's bytes.
+$rangeOut = function (int $claimedPlainSize) use ($fmtDir, $v3raw, $fmtPw): string {
+  $fh = fopen("$fmtDir/v3.enc", 'rb');
+  fseek($fh, 39);
+  $buf = '';
+  ob_start(function ($c) use (&$buf) { $buf .= $c; return ''; });
+  Crypto::decrypt_s3_range_output($fh, bin2hex(substr($v3raw, 11, 16)), $fmtPw, 0, 0, 99, Crypto::CHUNK_SIZE, $claimedPlainSize);
+  ob_end_flush();
+  fclose($fh);
+  return $buf;
+};
+check('s3 range serves a marker-matched blob', $rangeOut(strlen($fmtBody)) === substr($fmtBody, 0, 100));
+check('s3 range rejects marker/blob size mismatch', $rangeOut(strlen($fmtBody) + 1) === '');
+foreach (glob("$fmtDir/*") ?: [] as $f) @unlink($f);
+@rmdir($fmtDir);
+
 // --- Hardening minors ---
 section('data/ deny rules');
 $baseSrcM = file_get_contents("$dir/components/base.class.php");
@@ -1490,13 +1561,13 @@ $encStart = 39 + $firstChunk * $encStride;
 $s3RangeScript = sprintf(
   'php -r %s 2>&1',
   escapeshellarg(sprintf(
-    'require "%s/components/app.class.php"; require "%s/components/base.class.php"; require "%s/components/crypto.class.php"; require "%s/components/s3.class.php"; $fh = fopen(%s, "rb"); fseek($fh, %d); Crypto::decrypt_s3_range_output($fh, %s, %s, %d, %d, %d, %d); fclose($fh);',
+    'require "%s/components/app.class.php"; require "%s/components/base.class.php"; require "%s/components/crypto.class.php"; require "%s/components/s3.class.php"; $fh = fopen(%s, "rb"); fseek($fh, %d); Crypto::decrypt_s3_range_output($fh, %s, %s, %d, %d, %d, %d, %d); fclose($fh);',
     __DIR__, __DIR__, __DIR__, __DIR__,
     var_export($tmpS3Out, true),
     $encStart,
     var_export($saltHex, true),
     var_export($pw, true),
-    $firstChunk, $rs, $re, $chunkSize
+    $firstChunk, $rs, $re, $chunkSize, strlen($s3Data)
   ))
 );
 $s3RangeOut = shell_exec($s3RangeScript) ?? '';

@@ -3,10 +3,14 @@
 //
 // Crypto — AES-256-GCM encryption for Darkdrive
 //
-//   File format (DARKDRIVEV2):
+//   File format (DARKDRIVEV3):
 //     Header:  MAGIC (11 B) | salt (16 B) | chunk_size (4 B) | plain_size (8 B)
 //     Chunks:  cipher_len (4 B) | nonce (12 B) | tag (16 B) | ciphertext
-//     Each chunk is authenticated with its index as AAD (V2 only).
+//     AAD binds chunk index (V2+) plus plain_size and chunk_size (V3), so a
+//     truncated or size-swapped blob fails to authenticate instead of decrypting
+//     silently. V3 also verifies the decrypted total against the header.
+//     V1 (no AAD) and V2 (index only) still decrypt unchanged.
+//     The V3 header is byte-identical to V2 — only the magic differs.
 //
 //   Filenames:  PBKDF2-derived key (100k rounds, domain salt) + random nonce per name
 //   Key split:  password encrypted into cookie, random share in session — neither alone decrypts
@@ -18,13 +22,20 @@ class Crypto {
   const CHUNK_SIZE = 16 * 1024 * 1024;
   const MAGIC_V1   = "DARKDRIVEV1";
   const MAGIC_V2   = "DARKDRIVEV2";
+  const MAGIC_V3   = "DARKDRIVEV3";
 
   private static function derive_key(string $password, string $salt): string {
     return hash_pbkdf2('sha256', $password, $salt, 100_000, 32, true);
   }
 
   private static function is_magic(string $magic): bool {
-    return $magic === self::MAGIC_V1 || $magic === self::MAGIC_V2;
+    return $magic === self::MAGIC_V1 || $magic === self::MAGIC_V2 || $magic === self::MAGIC_V3;
+  }
+
+  private static function chunk_aad(int $version, int $chunkIdx, int $plainSize, int $chunkSize): string {
+    if ($version <= 1) return '';
+    if ($version === 2) return pack('J', $chunkIdx);
+    return pack('J', $chunkIdx) . pack('J', $plainSize) . pack('N', $chunkSize);
   }
 
   public static function encrypt(string $data, string $password): string|false {
@@ -61,7 +72,7 @@ class Crypto {
     $salt = random_bytes(16);
     $key  = self::derive_key($password, $salt);
 
-    $header = self::MAGIC_V2 . $salt . pack('N', self::CHUNK_SIZE) . pack('J', $plainSize);
+    $header = self::MAGIC_V3 . $salt . pack('N', self::CHUNK_SIZE) . pack('J', $plainSize);
     if (fwrite($out, $header) !== strlen($header)) {
       fclose($in); fclose($out); @unlink($outPath); Base::memzero($key); return false;
     }
@@ -72,7 +83,7 @@ class Crypto {
       if ($plain === false || $plain === '') break;
       $nonce = random_bytes(12);
       $tag   = '';
-      $aad   = pack('J', $chunkIdx);
+      $aad   = self::chunk_aad(3, $chunkIdx, $plainSize, self::CHUNK_SIZE);
       $cipher = openssl_encrypt($plain, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $nonce, $tag, $aad, 16);
       if ($cipher === false) { fclose($in); fclose($out); @unlink($outPath); Base::memzero($key); return false; }
       $chunk = pack('N', strlen($cipher)) . $nonce . $tag . $cipher;
@@ -141,17 +152,19 @@ class Crypto {
     $mlen  = strlen(self::MAGIC_V1);
     $magic = self::fread_exact($fh, $mlen);
     if ($magic === false || !self::is_magic($magic)) return false;
-    $version = $magic === self::MAGIC_V2 ? 2 : 1;
+    $version = $magic === self::MAGIC_V3 ? 3 : ($magic === self::MAGIC_V2 ? 2 : 1);
 
     $salt      = self::fread_exact($fh, 16);
     $chunkMeta = self::fread_exact($fh, 12);
     if ($salt === false || strlen($salt) < 16 || $chunkMeta === false || strlen($chunkMeta) < 12) return false;
 
     $chunkSize = unpack('N', substr($chunkMeta, 0, 4))[1];
+    $plainSize = unpack('J', substr($chunkMeta, 4, 8))[1];
     if ($chunkSize === 0 || $chunkSize > self::CHUNK_SIZE * 2) return false;
     $key = self::derive_key($password, $salt);
 
     $chunkIdx = 0;
+    $seen     = 0;
     while (true) {
       $lenRaw = self::fread_exact($fh, 4);
       if ($lenRaw === false) break;
@@ -161,9 +174,10 @@ class Crypto {
       $tag    = self::fread_exact($fh, 16);
       $cipher = self::fread_exact($fh, $cipherLen);
       if ($nonce === false || $tag === false || $cipher === false) { Base::memzero($key); return false; }
-      $aad   = $version >= 2 ? pack('J', $chunkIdx) : '';
+      $aad   = self::chunk_aad($version, $chunkIdx, $plainSize, $chunkSize);
       $plain = openssl_decrypt($cipher, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $nonce, $tag, $aad);
       if ($plain === false) { Base::memzero($key); return false; }
+      $seen += strlen($plain);
       $cbResult = $onChunk($plain);
       if ($cbResult === false) { Base::memzero($key); return false; }
       if ($cbResult === true) { Base::memzero($key); return true; }
@@ -171,6 +185,7 @@ class Crypto {
     }
 
     Base::memzero($key);
+    if ($version >= 3 && $seen !== $plainSize) return false;
     return true;
   }
 
@@ -373,13 +388,15 @@ class Crypto {
     int    $first_chunk_idx,
     int    $rs,
     int    $re,
-    int    $chunk_size
+    int    $chunk_size,
+    int    $plain_size
   ): void {
     if (strlen($salt_hex) !== 32 || !ctype_xdigit($salt_hex)) return;
     $salt  = (string)hex2bin($salt_hex);
     $key   = self::derive_key($password, $salt);
     $chunk_idx   = $first_chunk_idx;
     $plain_offset = $first_chunk_idx * $chunk_size;
+    $version     = null;
 
     while (true) {
       $len_raw = self::fread_exact($fh, 4);
@@ -390,8 +407,12 @@ class Crypto {
       $tag    = self::fread_exact($fh, 16);
       $cipher = self::fread_exact($fh, $cipher_len);
       if ($nonce === false || $tag === false || $cipher === false) break;
-      $aad   = pack('J', $chunk_idx);
-      $plain = openssl_decrypt($cipher, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $nonce, $tag, $aad);
+      $plain = false;
+      foreach ($version !== null ? [$version] : [3, 2, 1] as $v) {
+        $aad = self::chunk_aad($v, $chunk_idx, $plain_size, $chunk_size);
+        $try = openssl_decrypt($cipher, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $nonce, $tag, $aad);
+        if ($try !== false) { $version = $v; $plain = $try; break; }
+      }
       if ($plain === false) break;
       $chunk_end = $plain_offset + strlen($plain) - 1;
       if ($plain_offset <= $re && $chunk_end >= $rs) {

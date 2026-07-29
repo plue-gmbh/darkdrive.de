@@ -187,7 +187,7 @@ class FileServer {
         $enc_end          = (int)$marker['size'] - 1;
         $stream = S3::get_range_stream($s3_key, $enc_start, $enc_end);
         if ($stream === false) { http_response_code(502); return; }
-        Crypto::decrypt_s3_range_output($stream, $salt_hex, $password, $first_chunk, $rs, $re, $chunk_size);
+        Crypto::decrypt_s3_range_output($stream, $salt_hex, $password, $first_chunk, $rs, $re, $chunk_size, $plain_size);
         fclose($stream);
       } else {
         $stream = S3::get_object_stream($s3_key);
