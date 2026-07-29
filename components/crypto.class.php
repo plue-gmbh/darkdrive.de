@@ -375,7 +375,8 @@ class Crypto {
     int    $re,
     int    $chunk_size
   ): void {
-    $salt  = hex2bin($salt_hex);
+    if (strlen($salt_hex) !== 32 || !ctype_xdigit($salt_hex)) return;
+    $salt  = (string)hex2bin($salt_hex);
     $key   = self::derive_key($password, $salt);
     $chunk_idx   = $first_chunk_idx;
     $plain_offset = $first_chunk_idx * $chunk_size;

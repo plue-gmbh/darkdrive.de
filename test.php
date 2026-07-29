@@ -713,6 +713,35 @@ check('public .htaccess keeps -Indexes',     str_contains($pubHt, 'Options -Inde
 check('header directives guarded by module', str_contains($pubHt, '<IfModule mod_headers.c>'));
 check('stale public .htaccess is rewritten', str_contains($fsSrcPub, "file_get_contents(\$htaccess) !== self::PUBLIC_HTACCESS"));
 
+// --- Hardening minors ---
+section('data/ deny rules');
+$baseSrcM = file_get_contents("$dir/components/base.class.php");
+$appSrcM  = file_get_contents("$dir/components/app.class.php");
+check('uses Apache 2.4 Require all denied', str_contains(Base::DATA_HTACCESS, 'Require all denied'));
+check('keeps 2.2 fallback for old servers', str_contains(Base::DATA_HTACCESS, 'Deny from all'));
+check('2.4 rule guarded by mod_authz_core', str_contains(Base::DATA_HTACCESS, '<IfModule mod_authz_core.c>'));
+check('2.2 fallback guarded by negation',   str_contains(Base::DATA_HTACCESS, '<IfModule !mod_authz_core.c>'));
+check('written on boot, not only setup',    str_contains($appSrcM, 'Base::protect_data_dir();'));
+check('stale deny file is rewritten',       str_contains($baseSrcM, 'self::DATA_HTACCESS'));
+
+section('Thumbnail temp isolation');
+$filesSrcM = file_get_contents("$dir/components/files.class.php");
+check_eq('thumbnailers use private 0700 dirs', substr_count($filesSrcM, 'mkdir($tmpDir, 0700, true)'), 3);
+check('video thumb drops shared-tmp tempnam', !str_contains($filesSrcM, "tempnam(sys_get_temp_dir(), 'dd_v_')"));
+check('pdf thumb drops shared-tmp tempnam',   !str_contains($filesSrcM, "tempnam(sys_get_temp_dir(), 'dd_p_')"));
+
+section('Assorted hardening');
+$cryptoSrcM = file_get_contents("$dir/components/crypto.class.php");
+$emergSrcM  = file_get_contents("$dir/components/emergency.class.php");
+$upSrcM     = file_get_contents("$dir/components/upload.class.php");
+check('status scan is cached per session',  str_contains($appSrcM, "\$_SESSION['status_cache']"));
+check('status page bypasses that cache',    str_contains($appSrcM, "!isset(\$_GET['status']) && is_array(\$cache)"));
+check('emergency passphrase is escaped',    !str_contains($emergSrcM, '<?= $passphrase ?>'));
+check('fail() param explicitly nullable',   str_contains($upSrcM, '?string &$password = null'));
+check('s3 salt validated before hex2bin',   str_contains($cryptoSrcM, 'ctype_xdigit($salt_hex)'));
+check('dedupe index is size-capped',        str_contains($upSrcM, 'ftell($fh) > self::DEDUPE_MAX_BYTES'));
+check('dedupe prune keeps newest entries',  str_contains($upSrcM, 'array_slice($map, -self::DEDUPE_MAX_ENTRIES'));
+
 // --- Login / Auth ---
 section('Login / Auth');
 // Login instance state

@@ -48,6 +48,7 @@ class App {
     $dataDir = rtrim(Base::data_path(), '/');
     if (!is_dir($dataDir) && !mkdir($dataDir, 0755, true)) exit('Could not create data directory. Check file permissions.');
     if (!file_exists(Base::data_path('index.php'))) @file_put_contents(Base::data_path('index.php'), "<?php http_response_code(403); exit;\n");
+    Base::protect_data_dir();
     if (!Base::session_works()) exit;
     Base::security_headers();
     self::parse_route();
@@ -534,6 +535,12 @@ Copyright © <?= date('Y') ?> plue GmbH – https://plue.tech
   }
 
   private static function compute_status(): void {
+    $cache = $_SESSION['status_cache'] ?? null;
+    if (!isset($_GET['status']) && is_array($cache) && (time() - (int)($cache['t'] ?? 0)) < 60) {
+      self::$storagePct   = $cache['pct'];
+      self::$statusErrors = (bool)$cache['err'];
+      return;
+    }
     $filesDir = Base::data_path('files');
     $totalBytes = 0;
     $allEncrypted = true;
@@ -588,6 +595,7 @@ Copyright © <?= date('Y') ?> plue GmbH – https://plue.tech
         if ((int)$ma[1] < 256 * 1024) self::$statusErrors = true;
       }
     }
+    $_SESSION['status_cache'] = ['t' => time(), 'pct' => self::$storagePct, 'err' => self::$statusErrors];
   }
 
   public static function header(): void {
@@ -719,7 +727,6 @@ self.addEventListener('fetch',function(e){var req=e.request;if(req.method==='POS
     if (!$dataEmpty) exit('Password file missing. Cannot regenerate — existing encrypted files would be lost.');
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['auth_key']) && strlen($_POST['auth_key']) <= 512 && Base::csrf_verify()
         && Base::auth_key_matches($_POST['auth_key'], (string)($_POST['password'] ?? ''))) {
-      file_put_contents(Base::data_path('.htaccess'), "Deny from all\n");
       file_put_contents($passwordFile, 'SPLITKEY:' . password_hash($_POST['auth_key'], PASSWORD_DEFAULT));
       $_SESSION = [];
       session_destroy();

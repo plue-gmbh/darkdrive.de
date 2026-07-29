@@ -113,8 +113,10 @@ class Files {
     if (!is_dir($thumbDir)) {
       mkdir($thumbDir, 0755, true);
     }
-    $tmpIn  = tempnam(sys_get_temp_dir(), 'dd_v_');
-    $tmpOut = $tmpIn . '.jpg';
+    $tmpDir = sys_get_temp_dir() . '/dd_v_' . bin2hex(random_bytes(8));
+    if (!mkdir($tmpDir, 0700, true)) return;
+    $tmpIn  = $tmpDir . '/input';
+    $tmpOut = $tmpDir . '/thumb.jpg';
     try {
       if (!Crypto::decrypt_to_path($filepath, $password, $tmpIn)) return;
       exec(escapeshellarg($bin) . ' -y -loglevel error -i ' . escapeshellarg($tmpIn)
@@ -134,8 +136,7 @@ class Files {
       if ($enc !== false) file_put_contents($thumbPath, $enc);
     } finally {
       Base::memzero($password);
-      self::secure_unlink($tmpIn);
-      self::secure_unlink($tmpOut);
+      self::rm_rf($tmpDir);
       if ($tmpS3) @unlink($tmpS3);
     }
   }
@@ -161,8 +162,10 @@ class Files {
     if (!is_dir($thumbDir)) {
       mkdir($thumbDir, 0755, true);
     }
-    $tmpIn  = tempnam(sys_get_temp_dir(), 'dd_p_');
-    $tmpOut = $tmpIn . '_thumb';
+    $tmpDir = sys_get_temp_dir() . '/dd_p_' . bin2hex(random_bytes(8));
+    if (!mkdir($tmpDir, 0700, true)) return;
+    $tmpIn  = $tmpDir . '/input';
+    $tmpOut = $tmpDir . '/thumb';
     try {
       if (!Crypto::decrypt_to_path($filepath, $password, $tmpIn)) return;
       exec(escapeshellarg($bin) . ' -jpeg -singlefile -f 1 -r 72 '
@@ -177,8 +180,7 @@ class Files {
       if ($enc !== false) file_put_contents($thumbPath, $enc);
     } finally {
       Base::memzero($password);
-      self::secure_unlink($tmpIn);
-      self::secure_unlink($tmpOut . '.jpg');
+      self::rm_rf($tmpDir);
       if ($tmpS3) @unlink($tmpS3);
     }
   }

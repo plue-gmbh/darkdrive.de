@@ -335,7 +335,7 @@ class Emergency {
         Your new password has been generated.<br>
         Write it down — it cannot be recovered.
       </p>
-      <code><?= $passphrase ?></code>
+      <code><?= htmlspecialchars($passphrase) ?></code>
       <p>Enter your current password to re-encrypt all files and thumbnails with the new password.</p>
       <form id="emergency-form" class="login" autocomplete="off"
             data-url="/?route=emergency"
@@ -344,7 +344,7 @@ class Emergency {
             data-warning="Now disable DARKDRIVE_EMERGENCY_PASSWORD mode!"
             data-redirect="Redirecting to login...">
         <input type="hidden" name="csrf_token" value="<?= Base::csrf_token() ?>">
-        <input type="hidden" name="new_password" value="<?= $passphrase ?>">
+        <input type="hidden" name="new_password" value="<?= htmlspecialchars($passphrase) ?>">
         <input type="password" name="old_password" required placeholder="Current Password" autocomplete="off">
         <button type="submit" class="login-button">Re-encrypt</button>
       </form>

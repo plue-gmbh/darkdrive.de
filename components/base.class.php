@@ -326,6 +326,16 @@ class Base {
     return in_array(strtolower(pathinfo($file, PATHINFO_EXTENSION)), self::EXT_DESIGN, true);
   }
 
+  const DATA_HTACCESS = "<IfModule mod_authz_core.c>\n  Require all denied\n</IfModule>\n"
+    . "<IfModule !mod_authz_core.c>\n  Deny from all\n</IfModule>\n";
+
+  public static function protect_data_dir(): void {
+    $path = self::data_path('.htaccess');
+    if (!is_file($path) || file_get_contents($path) !== self::DATA_HTACCESS) {
+      @file_put_contents($path, self::DATA_HTACCESS, LOCK_EX);
+    }
+  }
+
   public static function data_path(string $to=''): string {
     $dir = defined('DARKDRIVE_STORAGE_DIR') ? rtrim(DARKDRIVE_STORAGE_DIR, '/') : 'data';
     return $dir . '/' . $to;

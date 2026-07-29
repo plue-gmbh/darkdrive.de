@@ -14,7 +14,9 @@
 
 class Upload {
 
-  const DEDUPE_MAX_HASHES = 200;
+  const DEDUPE_MAX_HASHES  = 200;
+  const DEDUPE_MAX_ENTRIES = 5000;
+  const DEDUPE_MAX_BYTES   = 512 * 1024;
 
   private string $directory;
   private bool $active;
@@ -31,7 +33,7 @@ class Upload {
     new self($directory, $active);
   }
 
-  private static function fail(string $reason, string &$password = null): never {
+  private static function fail(string $reason, ?string &$password = null): never {
     if ($password !== null) { Base::memzero($password); Crypto::clear_cache(); }
     exit(json_encode(['error' => $reason]));
   }
@@ -230,6 +232,16 @@ class Upload {
     if (!flock($fh, LOCK_EX)) { fclose($fh); return; }
     fseek($fh, 0, SEEK_END);
     fwrite($fh, self::dedupe_tag($fingerprint, $password) . '|' . $filename . "\n");
+    if (ftell($fh) > self::DEDUPE_MAX_BYTES) {
+      rewind($fh);
+      $map = self::dedupe_parse((string)stream_get_contents($fh));
+      if (count($map) > self::DEDUPE_MAX_ENTRIES) {
+        $map = array_slice($map, -self::DEDUPE_MAX_ENTRIES, null, true);
+      }
+      ftruncate($fh, 0);
+      rewind($fh);
+      fwrite($fh, self::dedupe_serialize($map));
+    }
     flock($fh, LOCK_UN);
     fclose($fh);
   }
