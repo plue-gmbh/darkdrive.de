@@ -222,8 +222,9 @@ class S3 {
     $stream = @fopen($signed['url'], 'rb', false, $ctx);
     if ($stream === false) return false;
 
-    if (isset($http_response_header) && is_array($http_response_header)) {
-      $status_line = $http_response_header[0] ?? '';
+    $response_headers = stream_get_meta_data($stream)['wrapper_data'] ?? null;
+    if (is_array($response_headers)) {
+      $status_line = $response_headers[0] ?? '';
       if (!preg_match('/^HTTP\/\S+\s+(2\d\d)/', $status_line)) {
         fclose($stream);
         return false;

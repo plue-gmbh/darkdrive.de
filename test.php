@@ -526,7 +526,6 @@ $ct    = openssl_encrypt($pw, 'aes-256-gcm', $share, OPENSSL_RAW_DATA, $nonce, $
 $_SESSION = ['enc_share' => $share];
 $_COOKIE['enc_key'] = base64_encode("\x02" . $nonce . $tag . $ct);
 $rn = new ReflectionMethod('Files', 'real_name');
-$rn->setAccessible(true);
 check_eq('legacy pdf',    $rn->invoke(null, '20250101-120000-report.pdf'),  'report.pdf');
 check_eq('legacy txt',    $rn->invoke(null, '20250101-120000-notes.txt'),   'notes.txt');
 check_eq('legacy mp4',    $rn->invoke(null, '20250220-093015-clip.mp4'),    'clip.mp4');
@@ -542,7 +541,6 @@ $_SESSION = ['enc_share' => $wrongShare];
 $_COOKIE['enc_key'] = base64_encode("\x02" . $wrongNonce . $wrongTag . $wrongCt);
 Crypto::clear_cache();
 $rnCache = new ReflectionProperty('Files', 'realNameCache');
-$rnCache->setAccessible(true);
 $rnCache->setValue(null, []);
 $fallback = $rn->invoke(null, $stored);
 check('bad pw → string fallback', is_string($fallback) && $fallback !== 'invoice-2025.pdf');
@@ -565,7 +563,6 @@ $_POST = [];
 // --- Trusted proxy IP ---
 section('Trusted proxy IP');
 $clientIp = new ReflectionMethod('Login', 'client_ip');
-$clientIp->setAccessible(true);
 $_SERVER['REMOTE_ADDR'] = '203.0.113.1';
 unset($_SERVER['HTTP_X_FORWARDED_FOR']);
 check_eq('direct IP', $clientIp->invoke(null), '203.0.113.1');
@@ -608,14 +605,11 @@ check('safe file rejects phtml', !Base::is_safe_file('test.phtml'));
 // Upload instance state
 Upload::init('/tmp/test-upload', true);
 $uInst = new ReflectionProperty('Upload', 'instance');
-$uInst->setAccessible(true);
 $inst = $uInst->getValue();
 check('Upload::init creates instance', $inst !== null);
 $uDir = new ReflectionProperty('Upload', 'directory');
-$uDir->setAccessible(true);
 check_eq('Upload instance directory', $uDir->getValue($inst), '/tmp/test-upload');
 $uActive = new ReflectionProperty('Upload', 'active');
-$uActive->setAccessible(true);
 check_eq('Upload instance active', $uActive->getValue($inst), true);
 // Re-init with inactive
 Upload::init('/tmp/other', false);
@@ -638,7 +632,7 @@ define("DARKDRIVE_STORAGE_DIR", ' . var_export($dedupeDir, true) . ');
 require ' . var_export("$dir/components/app.class.php", true) . ';
 require ' . var_export("$dir/components/base.class.php", true) . ';
 require ' . var_export("$dir/components/upload.class.php", true) . ';
-$m = function (string $name) { $r = new ReflectionMethod("Upload", $name); $r->setAccessible(true); return $r; };
+$m = function (string $name) { $r = new ReflectionMethod("Upload", $name); return $r; };
 $tag = $m("dedupe_tag"); $rec = $m("dedupe_record"); $sync = $m("dedupe_sync"); $path = $m("dedupe_path");
 $pw = "pw-one"; $pw2 = "pw-two";
 $fpA = str_repeat("a", 64); $fpB = str_repeat("b", 64); $fpC = str_repeat("c", 64);
@@ -1028,7 +1022,7 @@ define("DARKDRIVE_MAX_STORAGE", 1024);
 define("DARKDRIVE_STORAGE_DIR", ' . var_export($stampDir, true) . ');
 require ' . var_export("$dir/components/base.class.php", true) . ';
 require ' . var_export("$dir/components/app.class.php", true) . ';
-$m = new ReflectionMethod("App", "status_stamp"); $m->setAccessible(true);
+$m = new ReflectionMethod("App", "status_stamp");
 $stamp = fn() => $m->invoke(null);
 $a = $stamp();
 $b = $stamp();
@@ -1091,7 +1085,6 @@ section('Login / Auth');
 // Login instance state
 Login::init('SPLITKEY:$2y$10$abcdefabcdefabcdefabceABCDEFABCDEFABCDEFABCDEFABCDE');
 $lInst = new ReflectionProperty('Login', 'instance');
-$lInst->setAccessible(true);
 check('Login::init creates instance', $lInst->getValue() !== null);
 check('is_splitkey detects SPLITKEY:', Login::is_splitkey());
 // Non-splitkey
@@ -1153,7 +1146,6 @@ check('darksync sends the password',        str_contains((string)file_get_conten
 // --- Login lockout ---
 section('Login lockout');
 $isLockedOut = new ReflectionMethod('Login', 'is_locked_out');
-$isLockedOut->setAccessible(true);
 if (!is_dir('data')) @mkdir('data', 0755);
 $_SESSION = ['login_attempts' => 0];
 check('0 attempts → not locked', !$isLockedOut->invoke(null));
@@ -1177,7 +1169,6 @@ check('only lowercase + digits',      (bool) preg_match('/^[a-z0-9-]+$/', $p1));
 check('no ambiguous chars (0,1,i,l,o)', !preg_match('/[01ilo]/', $p1));
 
 $cleanup = new ReflectionMethod('Emergency', 'cleanup_tmp');
-$cleanup->setAccessible(true);
 $tmpClean = sys_get_temp_dir() . '/dd_cleanup_' . getmypid();
 @mkdir($tmpClean);
 file_put_contents("$tmpClean/file1.plain.tmp", 'x');
@@ -1553,7 +1544,6 @@ check('unwrap wrong pw → false', Crypto::decrypt_filename_unwrap($singleEnc, '
 section('Crypto instance + clear_cache');
 Crypto::clear_cache();
 $cInst = new ReflectionProperty('Crypto', 'instance');
-$cInst->setAccessible(true);
 // After clear_cache, instance may still exist but keys should be cleared
 $ef1 = Crypto::encrypt_filename('test', $pw);
 check('encrypt after clear_cache works', is_string($ef1));
@@ -1561,7 +1551,6 @@ $inst = $cInst->getValue();
 check('Crypto instance created', $inst !== null);
 Crypto::clear_cache();
 $fnKey = new ReflectionProperty('Crypto', 'fnKey');
-$fnKey->setAccessible(true);
 check_eq('clear_cache nulls fnKey', $fnKey->getValue($inst), null);
 
 // --- Create text file ---
@@ -1631,9 +1620,7 @@ unlink($createFilePath);
 
 section('Header status: compute_status checks');
 $cs = new ReflectionMethod('App', 'compute_status');
-$cs->setAccessible(true);
 $cachedProp = new ReflectionProperty('Files', 'cachedFiles');
-$cachedProp->setAccessible(true);
 // Verify compute_status source covers the expected checks
 $appSrcCS = file_get_contents("$dir/components/app.class.php");
 $csBody = '';
@@ -1667,7 +1654,6 @@ $dataFiles = Base::data_path('files');
 if (!is_dir($dataFiles)) @mkdir($dataFiles, 0755, true);
 // Clear cached file list so all_files() re-scans
 $cachedProp = new ReflectionProperty('Files', 'cachedFiles');
-$cachedProp->setAccessible(true);
 $cachedProp->setValue(null, null);
 // Place a plaintext file
 $fakePlain = $dataFiles . '/test-unencrypted-probe';
@@ -1675,7 +1661,6 @@ file_put_contents($fakePlain, 'I am plaintext');
 // Reset statusErrors and call compute_status
 App::$statusErrors = false;
 $cs = new ReflectionMethod('App', 'compute_status');
-$cs->setAccessible(true);
 $cs->invoke(null);
 check('unencrypted file → statusErrors=true', App::$statusErrors === true);
 // Clean up and verify encrypted file does NOT trigger error
@@ -1753,7 +1738,6 @@ check('delete_marker removes file', S3::read_marker($mFile) === false);
 // --- S3: all_files() deduplication ---
 section('Files::all_files() with S3 markers');
 $cachedFilesProp = new ReflectionProperty('Files', 'cachedFiles');
-$cachedFilesProp->setAccessible(true);
 // Uses the real data/files dir so all_files() sees genuine markers alongside
 // local blobs; every fixture below is removed again at the end of the section.
 if (!is_dir('data/files')) @mkdir('data/files', 0755, true);
@@ -1782,7 +1766,6 @@ $cachedFilesProp->setValue(null, null);
 // --- S3: recalc_storage skips .s3 files ---
 section('Upload::recalc_storage skips .s3 markers');
 $recalc = new ReflectionMethod('Upload', 'recalc_storage');
-$recalc->setAccessible(true);
 if (!is_dir('data/files')) @mkdir('data/files', 0755, true);
 $rcLocal  = '20260110-000000-rclocal';
 $rcMarker = '20260110-000001-rcmarker';
